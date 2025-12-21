@@ -1,0 +1,13 @@
+data
+encodings*
+edited
+scripts
+generated
+logs
+results
+__pycache__
+*.pyc
+*.jpeg
+*.DS_Store
+*.yaml
+*all*
