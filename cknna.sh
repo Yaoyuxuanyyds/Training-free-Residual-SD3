@@ -3,28 +3,28 @@ set -euo pipefail
 # =============== 阶段 0：环境 ===============
 source /inspire/hdd/project/chineseculture/public/yuxuan/miniconda3/etc/profile.d/conda.sh
 conda activate repa-sd3
-cd /inspire/hdd/project/chineseculture/public/yuxuan/REPA-sd3
+cd /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3
 
 
 
-python compute_sd3_text_cknna_pro.py \
-    --dataset blip3o \
-    --datadir /inspire/hdd/project/chineseculture/public/yuxuan/datasets \
-    --num-samples 25 \
-    --timestep-idx 500 \
-    --vis-sample-size 100000 \
-    --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/REPA-sd3/logs/results/results-data-rm1/base-normalize-LN \
-    --dataset-train \
-    --ignore-padding
+# python compute_sd3_text_cknna_pro.py \
+#     --dataset blip3o \
+#     --datadir /inspire/hdd/project/chineseculture/public/yuxuan/datasets \
+#     --num-samples 25 \
+#     --timestep-idx 500 \
+#     --vis-sample-size 100000 \
+#     --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/REPA-sd3/logs/results/results-data-rm1/base-normalize-LN \
+#     --dataset-train \
+#     --ignore-padding
 
 # 单条 prompt 可视化（带 token idx+内容标注）
-# python compute_sd3_text_cknna_pro.py \
-#     --prompt "a red apple on a wooden table" \
-#     --image /path/to/image.png \
-#     --timestep-idx 500 \
-#     --num-samples 1 \
-#     --ignore-padding \
-#     --output-dir /path/to/output
+python compute_sd3_text_cknna_pro.py \
+    --prompt "A photo of a green traffic light." \
+    --image /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/image.png \
+    --timestep-idx 950 \
+    --num-samples 1 \
+    --ignore-padding \
+    --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/vis
 
 # LoRA 示例
 # python compute_sd3_text_cknna_pro.py \
