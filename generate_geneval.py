@@ -88,7 +88,7 @@ class SD3ImageGenerator:
 # ============================================================
 # 参数解析（加入 world_size / rank）
 # ============================================================
-def parse_opt():
+def parse_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--metadata_file", type=str, required=True)
@@ -98,9 +98,9 @@ def parse_opt():
     parser.add_argument("--batch_size", type=int, default=16)
 
     # residual
-    parser.add_argument("--residual_target_layers", type=int, nopt="+", default=None)
+    parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
-    parser.add_argument("--residual_weights", type=float, nopt="+", default=None)
+    parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
 
     # ---------- LoRA 采样支持 ---------- #
     parser.add_argument('--lora_ckpt', type=str, default=None, help='Path to LoRA-only checkpoint (.pth)')
@@ -115,17 +115,17 @@ def parse_opt():
     parser.add_argument("--world_size", type=int, default=1)
     parser.add_argument("--rank", type=int, default=0)
 
-    return parser.parse_opt()
+    return parser.parse_args()
 
 
 # ============================================================
 # 主流程
 # ============================================================
-def main(opt):
+def main(args):
     # ===== 加载 metadata =====
-    if not os.path.exists(opt.metadata_file):
-        raise FileNotFoundError(f"metadata 文件不存在：{opt.metadata_file}")
-    with open(opt.metadata_file) as fp:
+    if not os.path.exists(args.metadata_file):
+        raise FileNotFoundError(f"metadata 文件不存在：{args.metadata_file}")
+    with open(args.metadata_file) as fp:
         metadatas = [json.loads(line) for line in fp]
 
     total_items = len(metadatas)
@@ -133,36 +133,31 @@ def main(opt):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # ===== 手动分片 =====
-    if opt.world_size > 1:
-        local_indices = [i for i in range(total_items) if i % opt.world_size == opt.rank]
+    if args.world_size > 1:
+        local_indices = [i for i in range(total_items) if i % args.world_size == args.rank]
     else:
         local_indices = list(range(total_items))
 
-    print(f"[Rank {opt.rank}] 总任务: {total_items}，本卡处理: {len(local_indices)}")
+    print(f"[Rank {args.rank}] 总任务: {total_items}，本卡处理: {len(local_indices)}")
 
     # ===== 初始化生成器（每张卡一次）=====
     generator = SD3ImageGenerator(
         model='sd3',
         load_dir=None,
-        lora_ckpt=opt.lora_ckpt,
-        lora_rank=opt.lora_rank,
-        lora_alpha=opt.lora_alpha,
-        lora_target=opt.lora_target,
-        lora_dropout=opt.lora_dropout,
-        residual_target_layers=opt.residual_target_layers,
-        residual_origin_layer=opt.residual_origin_layer,
-        residual_weights=opt.residual_weights,
+        residual_target_layers=args.residual_target_layers,
+        residual_origin_layer=args.residual_origin_layer,
+        residual_weights=args.residual_weights,
     )
 
     # ---------- 如果提供了 LoRA ckpt，注入 + 加载 ----------
-    if opt.lora_ckpt is not None:
-        print(f"[LoRA] injecting & loading LoRA from: {opt.lora_ckpt}")
-        target = "all_linear" if opt.lora_target == "all_linear" else tuple(opt.lora_target.split(","))
+    if args.lora_ckpt is not None:
+        print(f"[LoRA] injecting & loading LoRA from: {args.lora_ckpt}")
+        target = "all_linear" if args.lora_target == "all_linear" else tuple(args.lora_target.split(","))
         # 对 sampler.denoiser（SD3Transformer2DModel_Vanilla）里的 transformer 注入
-        inject_lora(generator.sampler.denoiser, rank=opt.lora_rank, alpha=opt.lora_alpha,
-                    target=target, dropout=opt.lora_dropout)
+        inject_lora(generator.sampler.denoiser, rank=args.lora_rank, alpha=args.lora_alpha,
+                    target=target, dropout=args.lora_dropout)
         generator.sampler.denoiser.to(device=device, dtype=torch.float32)   # 就地转换
-        lora_sd = torch.load(opt.lora_ckpt, map_location="cpu")
+        lora_sd = torch.load(args.lora_ckpt, map_location="cpu")
         load_lora_state_dict(generator.sampler.denoiser, lora_sd, strict=True)
         
         generator.sampler.denoiser.eval()
@@ -177,12 +172,12 @@ def main(opt):
         metadata = metadatas[index]
         prompt = metadata["prompt"]
 
-        outpath = os.path.join(opt.outdir, f"{index:05d}")
+        outpath = os.path.join(args.outdir, f"{index:05d}")
         sample_path = os.path.join(outpath, "samples")
 
         os.makedirs(sample_path, exist_ok=True)
 
-        print(f"[Rank {opt.rank}] Prompt {index:05d}/{total_items}: {prompt}")
+        print(f"[Rank {args.rank}] Prompt {index:05d}/{total_items}: {prompt}")
 
         with open(os.path.join(outpath, "metadata.jsonl"), "w") as fp:
             json.dump(metadata, fp)
@@ -193,25 +188,25 @@ def main(opt):
         # 一个 prompt 多次采样
         with torch.no_grad():
             for _ in trange(
-                (opt.n_samples + opt.batch_size - 1) // opt.batch_size,
-                desc=f"[Rank {opt.rank}] Sampling {index:05d}",
+                (args.n_samples + args.batch_size - 1) // args.batch_size,
+                desc=f"[Rank {args.rank}] Sampling {index:05d}",
             ):
-                current_bs = min(opt.batch_size, opt.n_samples - sample_count)
+                current_bs = min(args.batch_size, args.n_samples - sample_count)
 
                 for _ in range(current_bs):
                     img_path = os.path.join(sample_path, f"{sample_count:05d}.png")
 
                     if os.path.exists(img_path):
-                        print(f"[Rank {opt.rank}] 跳过已存在: {img_path}")
+                        print(f"[Rank {args.rank}] 跳过已存在: {img_path}")
                         sample_count += 1
                         continue
 
                     image = generator.generate_image(
                         prompt=prompt,
-                        seed=opt.seed + sample_count,
-                        residual_target_layers=opt.residual_target_layers,
-                        residual_origin_layer=opt.residual_origin_layer,
-                        residual_weights=opt.residual_weights,
+                        seed=args.seed + sample_count,
+                        residual_target_layers=args.residual_target_layers,
+                        residual_origin_layer=args.residual_origin_layer,
+                        residual_weights=args.residual_weights,
                     )
 
                     # ====== 新增：统一成 [C, H, W] ======
@@ -238,9 +233,9 @@ def main(opt):
 
         del all_samples
 
-    print(f"[Rank {opt.rank}] 完成！")
+    print(f"[Rank {args.rank}] 完成！")
 
 
 if __name__ == "__main__":
-    opt = parse_opt()
-    main(opt)
+    args = parse_args()
+    main(args)
