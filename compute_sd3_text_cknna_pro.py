@@ -171,7 +171,6 @@ def run(args: argparse.Namespace):
         use_8bit=False,
         load_ckpt_path=args.load_ckpt,
         load_transformer_only=False,
-        denoiser_override=None,
     )
 
     denoiser = base.denoiser
@@ -309,12 +308,19 @@ def run(args: argparse.Namespace):
                 encoder_hidden_states=prompt_emb,
                 pooled_projections=pooled_emb,
                 return_dict=False,
-                target_layers=target_layers,
+                output_hidden_states=True,
             )
 
-        txt_feats_list = outputs["txt_feats_list"]
         layer0_feats = outputs["context_embedder_output"][0]
-        layer_to_feats = {layer: feats[0] for layer, feats in zip(target_layers, txt_feats_list)}
+        txt_hidden_states_list = outputs["txt_hidden_states"]
+        if txt_hidden_states_list is None or len(txt_hidden_states_list) == 0:
+            raise ValueError("No text hidden states collected; enable output_hidden_states.")
+        max_layer = max(target_layers)
+        if max_layer >= len(txt_hidden_states_list):
+            raise ValueError(
+                f"Requested layer {max_layer} but only {len(txt_hidden_states_list)} layers were recorded."
+            )
+        layer_to_feats = {layer: txt_hidden_states_list[layer][0] for layer in target_layers}
 
         selector = token_mask if token_mask is not None else slice(None)
         layer0_valid = layer0_feats[selector].detach().to(torch.float32).cpu()
