@@ -1,4 +1,4 @@
-from typing import List, Tuple, Optional
+from typing import Callable, List, Tuple, Optional
 import torch
 from transformers import BitsAndBytesConfig, T5EncoderModel
 from tqdm import tqdm
@@ -8,6 +8,38 @@ from torch.nn.parallel import DistributedDataParallel
 from torch import nn
 from torch.amp import autocast
 from util import set_seed
+
+
+def build_timestep_residual_weight_fn(
+    name: Optional[str] = "linear",
+    power: float = 1.0,
+) -> Optional[Callable[[torch.Tensor, int], torch.Tensor]]:
+    if name is None:
+        return None
+
+    name = name.lower()
+
+    def _apply_power(weight: torch.Tensor) -> torch.Tensor:
+        if power != 1.0:
+            return weight**power
+        return weight
+
+    def linear(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
+        weight = 1.0 - timestep.float() / float(num_train_timesteps)
+        weight = weight.clamp(0.0, 1.0)
+        return _apply_power(weight)
+
+    if name == "linear":
+        return linear
+
+    if name == "cosine":
+        def cosine(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
+            weight = 0.5 * (1.0 + torch.cos(torch.pi * timestep.float() / float(num_train_timesteps)))
+            return _apply_power(weight.clamp(0.0, 1.0))
+
+        return cosine
+
+    raise ValueError(f"Unsupported timestep residual weight fn: {name}")
 
 
 class StableDiffusion3Base():
@@ -240,6 +272,48 @@ class SD3Euler(StableDiffusion3Base):
     def __init__(self, model_key='/inspire/hdd/project/chineseculture/public/yuxuan/base_models/Diffusion/sd3', device='cuda', use_8bit=False, load_ckpt_path=None, load_transformer_only: bool = False):
         super().__init__(model_key=model_key, device=device, use_8bit=use_8bit, load_ckpt_path=load_ckpt_path, load_transformer_only=load_transformer_only)
 
+    @staticmethod
+    def _resolve_timestep_residual_weight(
+        timestep: torch.Tensor,
+        num_train_timesteps: int,
+        weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]],
+    ) -> Optional[torch.Tensor]:
+        if weight_fn is None:
+            return None
+        try:
+            weight = weight_fn(timestep, num_train_timesteps)
+        except TypeError:
+            weight = weight_fn(timestep)
+
+        if not torch.is_tensor(weight):
+            weight = torch.tensor(weight, device=timestep.device, dtype=timestep.dtype)
+        else:
+            weight = weight.to(device=timestep.device, dtype=timestep.dtype)
+
+        if weight.numel() > 1:
+            weight = weight.reshape(-1)[0]
+        return weight
+
+    @staticmethod
+    def _scale_residual_weights(
+        residual_weights: Optional[List[float]],
+        timestep_weight: Optional[torch.Tensor],
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[torch.Tensor]:
+        if residual_weights is None:
+            return None
+        if timestep_weight is None:
+            if isinstance(residual_weights, torch.Tensor):
+                return residual_weights.to(device=device, dtype=dtype)
+            return torch.tensor(residual_weights, device=device, dtype=dtype)
+
+        if isinstance(residual_weights, torch.Tensor):
+            weights = residual_weights.to(device=device, dtype=dtype)
+        else:
+            weights = torch.tensor(residual_weights, device=device, dtype=dtype)
+        return weights * timestep_weight
+
     def inversion(self, src_img, prompts: List[str], NFE: int, cfg_scale: float = 1.0, batch_size: int = 1):
         prompt_emb, pooled_emb, _ = self.encode_prompt(prompts, batch_size)
         null_prompt_emb, null_pooled_emb, _ = self.encode_prompt([""], batch_size)
@@ -298,6 +372,7 @@ class SD3Euler(StableDiffusion3Base):
         residual_origin_layer: Optional[int] = None,
         residual_weights: Optional[List[float]] = None,
         residual_use_layernorm: bool = True,  # ⭐ 新增
+        residual_timestep_weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]] = None,
     ):
         imgH, imgW = img_shape if img_shape is not None else (1024, 1024)
         with torch.no_grad():
@@ -308,16 +383,30 @@ class SD3Euler(StableDiffusion3Base):
         self.scheduler.set_timesteps(NFE, device=self.device)
         timesteps = self.scheduler.timesteps
         steps = timesteps / self.scheduler.config.num_train_timesteps
+        weight_fn = None
+        if residual_weights is not None:
+            weight_fn = residual_timestep_weight_fn or build_timestep_residual_weight_fn()
 
         pbar = tqdm(timesteps, total=NFE, desc='SD3 Euler')
         for i, t in enumerate(pbar):
             timestep = t.expand(z.shape[0]).to(self.device)
+            timestep_weight = self._resolve_timestep_residual_weight(
+                timestep,
+                self.scheduler.config.num_train_timesteps,
+                weight_fn,
+            )
+            effective_residual_weights = self._scale_residual_weights(
+                residual_weights,
+                timestep_weight,
+                device=self.device_diff,
+                dtype=self.dtype,
+            )
 
             pred_v = self.predict_vector_residual(
                 z, timestep, prompt_emb, pooled_emb,
                 residual_target_layers=residual_target_layers,
                 residual_origin_layer=residual_origin_layer,
-                residual_weights=residual_weights,
+                residual_weights=effective_residual_weights,
                 residual_use_layernorm=residual_use_layernorm,  # ⭐ 传递
             )
 
@@ -326,7 +415,7 @@ class SD3Euler(StableDiffusion3Base):
                     z, timestep, null_prompt_emb, null_pooled_emb,
                     residual_target_layers=residual_target_layers,
                     residual_origin_layer=residual_origin_layer,
-                    residual_weights=residual_weights,
+                    residual_weights=effective_residual_weights,
                     residual_use_layernorm=residual_use_layernorm,  # ⭐ 传递
                 )
                 if cfg_scale != 1.0 else 0.0
@@ -339,4 +428,3 @@ class SD3Euler(StableDiffusion3Base):
         with torch.no_grad():
             img = self.decode(z)
         return img
-

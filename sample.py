@@ -10,7 +10,7 @@ import torchvision.transforms as torch_transforms
 import torch.nn as nn
 import tqdm
 
-from sampler import SD3Euler
+from sampler import SD3Euler, build_timestep_residual_weight_fn
 from dataset.datasets import get_target_dataset
 import json
 from lora_utils import *
@@ -88,6 +88,19 @@ if __name__ == '__main__':
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
+    parser.add_argument(
+        "--timestep_residual_weight_fn",
+        type=str,
+        default="linear",
+        choices=["linear", "cosine"],
+        help="Mapping from timestep (0-1000) to residual weight multiplier.",
+    )
+    parser.add_argument(
+        "--timestep_residual_weight_power",
+        type=float,
+        default=1.0,
+        help="Optional power for timestep residual weight mapping.",
+    )
 
 
     # ---------- LoRA 采样支持 ---------- #
@@ -189,6 +202,10 @@ if __name__ == '__main__':
                         residual_target_layers=args.residual_target_layers,
                         residual_origin_layer=args.residual_origin_layer,
                         residual_weights=args.residual_weights,
+                        residual_timestep_weight_fn=build_timestep_residual_weight_fn(
+                            args.timestep_residual_weight_fn,
+                            power=args.timestep_residual_weight_power,
+                        ),
                     )
             # ----------------------------------------------------
 
@@ -233,7 +250,11 @@ if __name__ == '__main__':
                                         batch_size=1,
                                         residual_target_layers=args.residual_target_layers,
                                         residual_origin_layer=args.residual_origin_layer,
-                                        residual_weights=args.residual_weights
+                                        residual_weights=args.residual_weights,
+                                        residual_timestep_weight_fn=build_timestep_residual_weight_fn(
+                                            args.timestep_residual_weight_fn,
+                                            power=args.timestep_residual_weight_power,
+                                        ),
                                     )       
 
         save_image(img, os.path.join(args.save_dir, f'{args.save_name}.png'), normalize=True)

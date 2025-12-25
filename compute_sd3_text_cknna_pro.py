@@ -256,6 +256,7 @@ def run(args: argparse.Namespace):
 
     # Variables used for single-sample token text annotations
     pca_annotation_texts = None
+    pca_annotation_indices = None
     branch_ids_filtered = None
 
     for pair_idx, image_data, prompt_value in iterate_pairs():
@@ -291,9 +292,11 @@ def run(args: argparse.Namespace):
             if token_mask is not None:
                 valid_idx = torch.nonzero(token_mask, as_tuple=False).squeeze(1).cpu().tolist()
                 pca_annotation_texts = [token_texts_full[i] for i in valid_idx]
+                pca_annotation_indices = valid_idx
                 branch_ids_filtered = [0 if i < 77 else 1 for i in valid_idx]
             else:
                 pca_annotation_texts = token_texts_full
+                pca_annotation_indices = list(range(len(token_texts_full)))
                 branch_ids_filtered = [0]*77 + [1]*256
 
         with torch.no_grad():
@@ -382,9 +385,12 @@ def run(args: argparse.Namespace):
             continue
 
         feats = torch.cat(token_list, dim=0)  # [N_tokens, D]
+        feats = torch.nn.functional.layer_norm(
+            feats, normalized_shape=(feats.shape[-1],), eps=1e-6
+        )
 
         # --------------------------------------------
-        # NEW: record pre-normalization mean & std
+        # record mean & std after LayerNorm
         # --------------------------------------------
         pre_mean = feats.mean(-1, keepdims=True).cpu().numpy()   # shape [1, D]
         pre_std  = feats.std(-1, keepdims=True).cpu().numpy()    # shape [1, D]
@@ -394,14 +400,6 @@ def run(args: argparse.Namespace):
             "mean": float(pre_mean.mean()),     # scalar mean over all dims
             "std": float(pre_std.mean()),       # scalar std over all dims
         }
-
-        # --------------------------------------------
-        # NEW: per-layer normalization (optional)
-        # --------------------------------------------
-        if getattr(args, "normalize_layers", False):
-            feats = feats - feats.mean(-1, keepdims=True)
-            feats = feats / (feats.std(-1, keepdims=True) + 1e-6)
-
 
         # For single-sample annotated case, DON'T subsample to keep index alignment for texts
         if args.num_samples != 1 and args.vis_sample_size > 0 and feats.shape[0] > args.vis_sample_size:
@@ -452,11 +450,13 @@ def run(args: argparse.Namespace):
                 def _clean(tok: str) -> str:
                     return tok.replace("</s>", "").replace("<pad>", "").strip()
 
-                for idx, ((x, y), tok, bid) in enumerate(zip(pca_2d, pca_annotation_texts, branch_ids_filtered)):
+                for (x, y), tok, tok_idx, bid in zip(
+                    pca_2d, pca_annotation_texts, pca_annotation_indices, branch_ids_filtered
+                ):
                     t = _clean(tok)
                     if not t:
                         continue
-                    label = f"{idx:03d}:{t}"
+                    label = f"{tok_idx:03d}:{t}"
                     ax.text(
                         x, y, label,
                         fontsize=5, alpha=0.85,
@@ -537,9 +537,6 @@ def parse_args():
     p.add_argument("--dataset-train", action="store_true", help="Use the training split of the dataset")
     p.add_argument("--vis-sample-size", type=int, default=512, help="Number of tokens to sample per layer for visualization")
     p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
-    p.add_argument("--normalize-layers", action="store_true",
-                help="Apply per-layer standardization before PCA.")
-
     return p.parse_args()
 
 
