@@ -29,6 +29,7 @@ class AttentionRecord:
     text2img: torch.Tensor   # [B, textLen, imgLen]
     img2text: torch.Tensor   # [B, textLen, imgLen]
     image_token_count: int
+    joint_attn: torch.Tensor  # [B, N, N], N = imgLen + textLen
 
 
 class CrossAttentionStore:
@@ -41,11 +42,13 @@ class CrossAttentionStore:
         text2img: torch.Tensor,
         img2text: torch.Tensor,
         image_token_count: int,
+        joint_attn: torch.Tensor,
     ):
         self._records[layer_idx] = AttentionRecord(
             text2img.detach().cpu(),
             img2text.detach().cpu(),
             image_token_count,
+            joint_attn.detach().cpu(),
         )
 
     def get(self, layer_idx: int) -> Optional[AttentionRecord]:
@@ -147,6 +150,7 @@ class JointAttentionRecorder(JointAttnProcessor2_0):
 
         if encoder_hidden_states is not None and context_length > 0 and self.store is not None:
             image_tokens = seq_len  # imgLen
+            joint_attn = attn_probs.mean(dim=1)  # [B, N, N]
 
             # ---------- ✔ TEXT → IMAGE ----------
             # attn_probs[:, :, text, img]
@@ -166,6 +170,7 @@ class JointAttentionRecorder(JointAttnProcessor2_0):
                 text2img=text2img_mean,
                 img2text=img2text_mean,
                 image_token_count=image_tokens,
+                joint_attn=joint_attn,
             )
 
         if encoder_output is not None:
@@ -442,8 +447,32 @@ def visualize_timestep(
     _plot(M_img2text_raw, "IMAGE→TEXT Raw Sum", "heat_img2text_raw.png")
     _plot(M_img2text_soft, "IMAGE→TEXT Softmax", "heat_img2text_softmax.png")
 
+    # ------------------------------
+    # 5) 绘制 joint attention 全图 (N x N)
+    # ------------------------------
+    for lid in layer_ids:
+        rec = store.get(lid)
+        if rec is None:
+            continue
+
+        joint_attn = rec.joint_attn[0].detach().cpu().numpy()
+        n_tokens = joint_attn.shape[0]
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        im = ax.imshow(joint_attn, aspect="equal", cmap="Reds")
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        ax.set_title(f"Joint Attention (Layer {lid}, N={n_tokens})")
+        ax.set_xlabel("Key")
+        ax.set_ylabel("Query")
+        plt.tight_layout()
+
+        path = os.path.join(step_dir, f"joint_attn_layer-{lid}.png")
+        plt.savefig(path, dpi=150)
+        plt.close(fig)
+        print(f"[SAVE] {path}")
+
     # =====================================================================
-    # 5) 原有 overlay grid: 图上标注 token 被关注的空间分布 (保持原逻辑)
+    # 6) 原有 overlay grid: 图上标注 token 被关注的空间分布 (保持原逻辑)
     # =====================================================================
     for word in token_words:
         matches = [tok_idx for tok_idx in valid_token_idxs if word in t5_tokens[tok_idx]]
@@ -677,8 +706,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
 
 
 
