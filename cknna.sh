@@ -19,12 +19,14 @@ cd /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3
 
 # 单条 prompt 可视化（带 token idx+内容标注）
 python compute_sd3_text_cknna_pro.py \
-    --prompt "A photo of 3 green traffic light." \
-    --image /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/image.png \
-    --timestep-idx 960 \
+    --prompt "A cozy living room with a wooden coffee table, a white mug, a small potted plant, and stacked books, warm natural light from a window." \
+    --image /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/image0.png \
+    --timestep-idx 945 \
     --num-samples 1 \
     --ignore-padding \
-    --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/vis
+    --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/vis/test4
+
+
 
 # LoRA 示例
 # python compute_sd3_text_cknna_pro.py \

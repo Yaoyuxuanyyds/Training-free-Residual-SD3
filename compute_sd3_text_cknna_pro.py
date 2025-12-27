@@ -475,7 +475,7 @@ def run(args: argparse.Namespace):
                 split = 77 if n_tokens >= 333 else min(77, n_tokens)
                 if split > 0:
                     clip_pts = pca_2d[:split]
-                    ax.scatter(clip_pts[:, 0], clip_pts[:, 1], s=8, alpha=0.3, color=colors_clip, label="CLIP tokens")
+                    ax.scatter(clip_pts[:, 0], clip_pts[:, 1], s=8, alpha=0.1, color=colors_clip, label="CLIP tokens")
                 if n_tokens - split > 0:
                     t5_pts = pca_2d[split:]
                     ax.scatter(t5_pts[:, 0], t5_pts[:, 1], s=8, alpha=0.3, color=colors_t5, label="T5 tokens")

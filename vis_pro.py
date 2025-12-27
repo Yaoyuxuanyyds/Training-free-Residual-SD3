@@ -17,7 +17,7 @@ import numpy as np
 from PIL import Image
 
 from diffusers.models.attention_processor import JointAttnProcessor2_0
-from sampler import StableDiffusion3Base  # 使用你提供的 StableDiffusion3Base
+from sampler import StableDiffusion3Base
 from util import set_seed
 
 # ============================================================
@@ -26,25 +26,33 @@ from util import set_seed
 
 @dataclass
 class AttentionRecord:
-    cross_attn: torch.Tensor  # [B, textLen, imageLen]
+    text2img: torch.Tensor   # [B, textLen, imgLen]
+    img2text: torch.Tensor   # [B, textLen, imgLen]
+    image_token_count: int
 
 
 class CrossAttentionStore:
     def __init__(self):
         self._records: Dict[int, AttentionRecord] = {}
-        self.image_token_count: Optional[int] = None
 
-    def add(self, layer_idx: int, cross_attn: torch.Tensor, image_token_count: int):
-        if self.image_token_count is None:
-            self.image_token_count = image_token_count
-        self._records[layer_idx] = AttentionRecord(cross_attn.detach().cpu())
+    def add(
+        self,
+        layer_idx: int,
+        text2img: torch.Tensor,
+        img2text: torch.Tensor,
+        image_token_count: int,
+    ):
+        self._records[layer_idx] = AttentionRecord(
+            text2img.detach().cpu(),
+            img2text.detach().cpu(),
+            image_token_count,
+        )
 
     def get(self, layer_idx: int) -> Optional[AttentionRecord]:
         return self._records.get(layer_idx, None)
 
     def clear(self):
         self._records.clear()
-        self.image_token_count = None
 
 
 # ============================================================
@@ -66,12 +74,10 @@ class JointAttentionRecorder(JointAttnProcessor2_0):
         *args,
         **kwargs,
     ):
-        # 兼容 diffusers，忽略 joint_attention_kwargs
         kwargs.pop("joint_attention_kwargs", None)
 
         bsz, seq_len, _ = hidden_states.shape
 
-        # image tokens: q/k/v
         query = attn.to_q(hidden_states)
         key   = attn.to_k(hidden_states)
         value = attn.to_v(hidden_states)
@@ -103,7 +109,6 @@ class JointAttentionRecorder(JointAttnProcessor2_0):
             if attn.norm_added_k is not None:
                 enc_k = attn.norm_added_k(enc_k)
 
-            # joint sequence: [image_tokens, text_tokens]
             query = torch.cat([query, enc_q], dim=2)
             key   = torch.cat([key,   enc_k], dim=2)
             value = torch.cat([value, enc_v], dim=2)
@@ -140,14 +145,28 @@ class JointAttentionRecorder(JointAttnProcessor2_0):
         hidden_states_out = attn.to_out[0](hidden_states_out)
         hidden_states_out = attn.to_out[1](hidden_states_out)
 
-        # 记录 cross-attn：text queries -> image keys
         if encoder_hidden_states is not None and context_length > 0 and self.store is not None:
-            image_tokens = seq_len
-            # [B, H, textLen, imgLen]
-            cross_slice = attn_probs[:, :, image_tokens:, :image_tokens]
-            # head 平均 → [B, textLen, imgLen]
-            cross_mean = cross_slice.mean(dim=1)
-            self.store.add(self.layer_idx, cross_mean, image_tokens)
+            image_tokens = seq_len  # imgLen
+
+            # ---------- ✔ TEXT → IMAGE ----------
+            # attn_probs[:, :, text, img]
+            text2img_slice = attn_probs[:, :, image_tokens:, :image_tokens]
+            text2img_mean = text2img_slice.mean(dim=1)  # [B, textLen, imgLen]
+
+            # ---------- ✔ IMAGE → TEXT ----------
+            # attn_probs[:, :, img, text]
+            img2text_slice = attn_probs[:, :, :image_tokens, image_tokens:]
+            img2text_mean = img2text_slice.mean(dim=1)  # [B, imgLen, textLen]
+
+            # 转置到和 text2img 同维度：[B, textLen, imgLen]
+            img2text_mean = img2text_mean.transpose(1, 2)
+
+            self.store.add(
+                self.layer_idx,
+                text2img=text2img_mean,
+                img2text=img2text_mean,
+                image_token_count=image_tokens,
+            )
 
         if encoder_output is not None:
             return hidden_states_out, encoder_output
@@ -157,7 +176,6 @@ class JointAttentionRecorder(JointAttnProcessor2_0):
 
 def register_attention_recorders(denoiser_module, store: CrossAttentionStore, target_layers=None):
     base_model = getattr(denoiser_module, "base_model", denoiser_module)
-    print(f"[Recorder] Total layers: {len(base_model.transformer_blocks)}")
     for idx, block in enumerate(base_model.transformer_blocks):
         if (target_layers is None) or (idx in target_layers):
             block.attn.set_processor(JointAttentionRecorder(store, idx))
@@ -245,10 +263,30 @@ def save_grid_for_token(
     plt.close(fig)
 
 
+
 # ============================================================
-#  Per-timestep visualization
+#  Viz utils
 # ============================================================
 
+def plot_heatmap(matrix: np.ndarray, tokens: List[str], layers: List[int], title: str, path: str):
+    fig, ax = plt.subplots(figsize=(2 + 1.2 * len(tokens), 6))
+    im = ax.imshow(matrix, aspect="auto", cmap="Reds")
+    plt.colorbar(im, ax=ax)
+
+    ax.set_xticks(range(len(tokens)))
+    ax.set_xticklabels(tokens, rotation=90, fontsize=8)
+    ax.set_yticks(range(len(layers)))
+    ax.set_yticklabels([str(l) for l in layers])
+
+    ax.set_title(title)
+    plt.tight_layout()
+    plt.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+# ============================================================
+# UPDATED visualize timestep
+# ============================================================
 def visualize_timestep(
     step_idx: int,
     decoded: torch.Tensor,
@@ -265,150 +303,191 @@ def visualize_timestep(
     """
     在单一 timestep 下生成：
       - decoded.png
-      - img→text attention heatmap (layer x token)
-      - 每个目标 token 的 overlay grid
+      - 4 heatmaps:
+          TEXT→IMAGE raw
+          TEXT→IMAGE softmax
+          IMAGE→TEXT raw
+          IMAGE→TEXT softmax
+      - 每个 token 的 overlay grid (原逻辑)
     """
     step_dir = os.path.join(out_dir, f"t{step_idx:04d}")
     os.makedirs(step_dir, exist_ok=True)
 
-    # 1. 保存当前时间步的 decode(z) 图像
+    # ------------------------------
+    # 1) 保存当前解码图像
+    # ------------------------------
     decoded_path = os.path.join(step_dir, "decoded.png")
     save_image(decoded, decoded_path, normalize=True)
     print(f"[SAVE] {decoded_path}")
 
-    # 把 decoded[0] 转成 [0,1] 再转 PIL，作为 overlay 背景
+    # base PIL for overlay grid
     img_tensor = decoded[0].detach().float().cpu()
     img_tensor = (img_tensor - img_tensor.min()) / (img_tensor.max() - img_tensor.min() + 1e-8)
     img_np = (img_tensor.numpy() * 255).clip(0, 255).astype(np.uint8)
-    img_np = np.transpose(img_np, (1, 2, 0))  # CHW -> HWC
+    img_np = np.transpose(img_np, (1, 2, 0))
     base_img_pil = Image.fromarray(img_np, mode="RGB")
 
-    # 2. 计算 img→text attention 总和热力图（仅可视化 token_words）
-    # ---------------------------------------------------------------
-
-    # 1) 为 token_words 找到它们对应的 T5 token index
+    # ------------------------------
+    # 2) 匹配 token_words → token indices
+    # ------------------------------
     selected_token_indices = []
     selected_token_strings = []
 
     for w in token_words:
-        # 寻找第一个包含该 substring 的 token
-        matches = [
-            tok_idx for tok_idx in valid_token_idxs
-            if w in t5_tokens[tok_idx]
-        ]
+        matches = [tok_idx for tok_idx in valid_token_idxs if w in t5_tokens[tok_idx]]
         if not matches:
-            print(f"[WARN] word '{w}' not found in valid T5 tokens")
+            print(f"[WARN] '{w}' not found in valid tokens")
             continue
-
-        tok_idx = matches[0]
-        selected_token_indices.append(tok_idx)
-        selected_token_strings.append(t5_tokens[tok_idx])
+        selected_token_indices.append(matches[0])
+        selected_token_strings.append(t5_tokens[matches[0]])
 
     if len(selected_token_indices) == 0:
-        print("[WARN] No matching tokens for token_words, skip heatmap.")
-    else:
-        print(f"[INFO] Selected tokens for heatmap: {selected_token_strings}")
+        print("[WARN] no selected tokens, abort heatmaps.")
+        return
 
-    # 2) 计算每层中这些 token 的 attention sum
-    layer_token_sums = []     # list of [1, num_selected_tokens]
-    effective_layers = []
+    # ------------------------------
+    # 3) 收集跨层 TEXT→IMAGE & IMAGE→TEXT
+    # ------------------------------
+    L_text2img = []   # raw sum per layer
+    L_img2text = []
+    layer_list = []
 
     for lid in layer_ids:
         rec = store.get(lid)
         if rec is None:
             continue
 
-        cross = rec.cross_attn[0]               # [textLen, imgLen]
-        # 先对 imgLen 求 sum => [textLen]
-        sums_full = cross.sum(dim=1)
+        # shape: [1, textLen, imgLen]
+        t2i = rec.text2img[0]
+        i2t = rec.img2text[0]
 
-        # 只取我们关心的 token_words 对应的 index
-        sums_sel = sums_full[selected_token_indices]   # [num_selected_tokens]
+        # sum attention over image tokens
+        # TEXT→IMAGE: 每 token 把多少注意力给图
+        s_text2img = t2i.sum(dim=1)[selected_token_indices]  # [K]
 
-        layer_token_sums.append(sums_sel.unsqueeze(0))  # [1, num_selected_tokens]
-        effective_layers.append(lid)
+        # IMAGE→TEXT: 每 token 从图收到多少注意力
+        s_img2text = i2t.sum(dim=1)[selected_token_indices]  # [K]
 
-    # 3) 绘制热力图
-    if layer_token_sums:
-        all_layers = torch.cat(layer_token_sums, dim=0)   # [L, num_selected_tokens]
-        all_layers_np = all_layers.detach().cpu().numpy()
+        L_text2img.append(s_text2img.unsqueeze(0))
+        L_img2text.append(s_img2text.unsqueeze(0))
+        layer_list.append(lid)
 
-        fig, ax = plt.subplots(figsize=(2 + 1.2 * len(selected_token_indices), 6))
+    if len(L_text2img) == 0:
+        print("[WARN] no valid attention records for selected layers")
+        return
 
-        # im = ax.imshow(all_layers_np, aspect="auto", cmap="viridis")
-        # im = ax.imshow(all_layers_np, aspect="auto", cmap="RdBu_r")
-        im = ax.imshow(all_layers_np, aspect="auto", cmap="Reds")
+    # ---------- STACK ----------
+    M_text2img_raw = torch.cat(L_text2img, dim=0)     # [L, K]
+    M_text2img_soft = torch.softmax(M_text2img_raw, dim=1)
 
+    M_img2text_raw = torch.cat(L_img2text, dim=0)
+    M_img2text_soft = torch.softmax(M_img2text_raw, dim=1)
+
+    # ------------------------------
+    # 4) 绘制四张 heatmap
+    # ------------------------------
+
+    def _plot(M: torch.Tensor, title: str, fname: str, fmt="%.4f"):
+        """
+        绘制热力图 + 在每个格子标注对应数值
+        M: [L, K]
+        """
+        M_np = M.detach().cpu().numpy()
+        L, K = M_np.shape
+
+        fig, ax = plt.subplots(figsize=(2 + 1.2 * K, 6))
+        # im = ax.imshow(M_np, aspect="auto", cmap="Reds")
+        im = ax.imshow(
+            M_np,
+            aspect="auto",
+            cmap="Reds",
+            vmin=0,
+            vmax=10
+        )
         plt.colorbar(im, ax=ax)
 
-        ax.set_title("Img→Text attention sum (only selected token_words)")
-
-        # x 轴：每列是一个 token_word 对应的 T5 token
-        ax.set_xticks(range(len(selected_token_indices)))
+        ax.set_title(title)
+        ax.set_xticks(range(K))
         ax.set_xticklabels(selected_token_strings, rotation=90, fontsize=8)
+        ax.set_yticks(range(L))
+        ax.set_yticklabels([str(l) for l in layer_list])
 
-        # y 轴：layer ids
-        ax.set_yticks(range(len(effective_layers)))
-        ax.set_yticklabels([str(l) for l in effective_layers])
+        # -------- ★ 在每个格子写数值 ★ --------
+        for i in range(L):           # row: layer index
+            for j in range(K):       # col: token index
+                val = M_np[i, j]
+                # 自动选择字体颜色（深色背景用白字）
+                # text_color = "white" if val > M_np.mean() else "black"
+                text_color = "white" if val > 5 else "black"
+                ax.text(
+                    j, i,
+                    fmt % val,
+                    ha="center", va="center",
+                    color=text_color,
+                    fontsize=8
+                )
 
         plt.tight_layout()
-
-        heatmap_path = os.path.join(step_dir, "img2text_heatmap_selected_tokens.png")
-        plt.savefig(heatmap_path, dpi=150)
+        path = os.path.join(step_dir, fname)
+        plt.savefig(path, dpi=150)
         plt.close(fig)
-
-        print(f"[SAVE] {heatmap_path}")
-
+        print(f"[SAVE] {path}")
 
 
-    # 3. 对每个指定 token word 生成跨层 overlay grid
+    # TEXT→IMAGE
+    _plot(M_text2img_raw, "TEXT→IMAGE Raw Sum", "heat_text2img_raw.png")
+    _plot(M_text2img_soft, "TEXT→IMAGE Softmax", "heat_text2img_softmax.png")
+
+    # IMAGE→TEXT
+    _plot(M_img2text_raw, "IMAGE→TEXT Raw Sum", "heat_img2text_raw.png")
+    _plot(M_img2text_soft, "IMAGE→TEXT Softmax", "heat_img2text_softmax.png")
+
+    # =====================================================================
+    # 5) 原有 overlay grid: 图上标注 token 被关注的空间分布 (保持原逻辑)
+    # =====================================================================
     for word in token_words:
         matches = [tok_idx for tok_idx in valid_token_idxs if word in t5_tokens[tok_idx]]
         if not matches:
-            print(f"[WARN] word '{word}' not found in first {len(valid_token_idxs)} valid T5 tokens")
             continue
 
         tok_idx = matches[0]
         tok_str = t5_tokens[tok_idx]
-
-        layer_to_map: Dict[int, torch.Tensor] = {}
+        layer_to_map = {}
 
         for lid in layer_ids:
             rec = store.get(lid)
             if rec is None:
                 continue
 
-            # rec.cross_attn: [B, textLen, imageLen]
             ctx_index = token_offset + tok_idx
-            if ctx_index >= rec.cross_attn.shape[1]:
-                print(f"[WARN] ctx_index {ctx_index} out of bounds for layer {lid}")
+            if ctx_index >= rec.text2img.shape[2]:
                 continue
 
-            token_map = rec.cross_attn[0, ctx_index]  # [imageLen]
-            image_token_count = store.image_token_count
-            grid_side = int(math.sqrt(image_token_count))
-            if grid_side * grid_side != image_token_count:
-                raise RuntimeError(
-                    f"image_token_count={image_token_count} not square; cannot reshape"
-                )
-            token_map_2d = token_map.view(grid_side, grid_side)
+            # NOTE: overlay uses TEXT→IMAGE spatial map
+            token_map = rec.text2img[0, tok_idx]  # [imgLen]
+
+            img_len = rec.image_token_count
+            side = int(math.sqrt(img_len))
+            if side * side != img_len:
+                raise RuntimeError("image_token_count not square")
+
+            token_map_2d = token_map.view(side, side)
             layer_to_map[lid] = token_map_2d
 
-        if layer_to_map:
-            grid_path = os.path.join(
-                step_dir,
-                f"grid_token-{sanitize_token(tok_str)}.png"
-            )
-            save_grid_for_token(
-                token_str=tok_str,
-                layer_list=[lid for lid in layer_ids if lid in layer_to_map],
-                layer_to_map=layer_to_map,
-                base_img_pil=base_img_pil,
-                out_path=grid_path,
-                cmap=cmap,
-                alpha=alpha,
-            )
-            print(f"[SAVE] {grid_path}")
+        if not layer_to_map:
+            continue
+
+        grid_path = os.path.join(step_dir, f"grid_token-{sanitize_token(tok_str)}.png")
+        save_grid_for_token(
+            token_str=tok_str,
+            layer_list=[lid for lid in layer_ids if lid in layer_to_map],
+            layer_to_map=layer_to_map,
+            base_img_pil=base_img_pil,
+            out_path=grid_path,
+            cmap=cmap,
+            alpha=alpha,
+        )
+        print(f"[SAVE] {grid_path}")
 
 
 # ============================================================
@@ -598,3 +677,14 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
