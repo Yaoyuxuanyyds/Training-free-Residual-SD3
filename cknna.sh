@@ -24,9 +24,9 @@ python compute_sd3_text_cknna_pro.py \
     --timestep-idx 945 \
     --num-samples 1 \
     --ignore-padding \
-    --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/vis/test4
+    --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/vis/test3
 
-
+# A cozy living room with a wooden coffee table, a white mug, a small potted plant, and stacked books, warm natural light from a window.
 
 # LoRA 示例
 # python compute_sd3_text_cknna_pro.py \

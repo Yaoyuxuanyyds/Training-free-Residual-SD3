@@ -288,6 +288,157 @@ def plot_heatmap(matrix: np.ndarray, tokens: List[str], layers: List[int], title
     plt.savefig(path, dpi=150)
     plt.close(fig)
 
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def shade_region(ax, start, end, color, alpha=0.05, axis="x"):
+    """
+    用半透明背景标记 token 区域（不遮挡、不与热力图颜色冲突）
+    """
+    if axis == "x":
+        ax.axvspan(start - 0.5, end - 0.5, color=color, alpha=alpha, lw=0)
+    else:
+        ax.axhspan(start - 0.5, end - 0.5, color=color, alpha=alpha, lw=0)
+
+
+def draw_joint_attention_with_shading(
+    joint_attn: np.ndarray,
+    image_token_count: int,
+    clip_token_count: int,
+    t5_token_count: int,
+    title: str,
+    save_path: str,
+    cmap: str = "Reds",
+):
+    """
+    绘制 N x N joint attention（原始值）：
+    - 热力图：Reds（attention 强度）
+    - 背景区间：冷色 / 中性色（语义区分，不干扰强度）
+    """
+    N = joint_attn.shape[0]
+    N_I = image_token_count
+    N_clip = clip_token_count
+    N_t5 = t5_token_count
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    im = ax.imshow(
+        joint_attn,
+        cmap="Reds",
+        aspect="equal",
+    )
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    # ===== 精确标注 CLIP / T5 首 token 的 cell =====
+    clip_start = N_I
+    t5_start = N_I + N_clip
+
+    # 清空默认刻度
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xticks([], minor=True)
+    ax.set_yticks([], minor=True)
+
+    # minor ticks：对齐到 cell 中心
+    ax.set_xticks([clip_start, t5_start], minor=True)
+    ax.set_yticks([clip_start, t5_start], minor=True)
+
+    # minor tick 样式（长度≈一个 cell）
+    ax.tick_params(
+        axis="both",
+        which="minor",
+        length=8,
+        width=1.2,
+        color="black"
+    )
+
+    # major ticks：只负责文字说明
+    ax.set_xticks([clip_start, t5_start])
+    ax.set_xticklabels(["CLIP start", "T5 start"], rotation=90, fontsize=9)
+
+    ax.set_yticks([clip_start, t5_start])
+    ax.set_yticklabels(["CLIP start", "T5 start"], fontsize=9)
+
+    # =====================================================
+    # 半透明背景（刻意避免红色系）
+    # =====================================================
+    # Image tokens → 冷蓝
+    shade_region(ax, 0, N_I, color="#4C72B0", alpha=0.1, axis="x")
+    shade_region(ax, 0, N_I, color="#4C72B0", alpha=0.1, axis="y")
+
+    # CLIP tokens → 中性灰蓝
+    shade_region(ax, N_I, N_I + N_clip, color="#55A868", alpha=0.1, axis="x")
+    shade_region(ax, N_I, N_I + N_clip, color="#55A868", alpha=0.1, axis="y")
+
+    # T5 tokens → 浅灰（不带暖色）
+    shade_region(ax, N_I + N_clip, N, color="#DDDDDD", alpha=0.1, axis="x")
+    shade_region(ax, N_I + N_clip, N, color="#DDDDDD", alpha=0.1, axis="y")
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close(fig)
+
+
+def draw_joint_attention_to_text_with_shading(
+    joint_attn: np.ndarray,
+    image_token_count: int,
+    clip_token_count: int,
+    t5_token_count: int,
+    save_path: str,
+    cmap: str = "Reds",
+):
+    """
+    绘制 joint attention 的子块：
+      - 行：所有 queries (N)
+      - 列：Text tokens (CLIP + T5)
+    外观 / 语义与完整 N×N 版本保持一致
+    """
+    N = joint_attn.shape[0]
+    N_I = image_token_count
+    N_clip = clip_token_count
+    N_t5 = t5_token_count
+
+    # 裁剪：All queries → Text keys
+    joint_to_text = joint_attn[:, N_I:]  # [N, N_txt]
+
+    fig, ax = plt.subplots(figsize=(6, 8))
+
+    im = ax.imshow(
+        joint_to_text,
+        cmap=cmap,
+        aspect="auto",
+    )
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    # ===============================
+    # 统一的背景区间（和 N×N 版一致）
+    # ===============================
+
+    # x 轴（Text tokens）
+    shade_region(ax, 0, N_clip, color="#55A868", alpha=0.1, axis="x")       # CLIP
+    shade_region(ax, N_clip, N_clip + N_t5, color="#DDDDDD", alpha=0.1, axis="x")  # T5
+
+    # y 轴（Queries）
+    shade_region(ax, 0, N_I, color="#4C72B0", alpha=0.1, axis="y")           # Image
+    shade_region(ax, N_I, N_I + N_clip, color="#55A868", alpha=0.1, axis="y")  # CLIP
+    shade_region(ax, N_I + N_clip, N, color="#DDDDDD", alpha=0.1, axis="y")  # T5
+
+    # ===============================
+    # start marker（保持语义一致）
+    # ===============================
+    ax.set_xticks([N_clip])
+    ax.set_xticklabels(["T5 start"], rotation=90, fontsize=9)
+
+    ax.set_yticks([N_I, N_I + N_clip])
+    ax.set_yticklabels(["CLIP start", "T5 start"], fontsize=9)
+
+    ax.set_title("Joint Attention → Text (All Queries)")
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close(fig)
+
 
 # ============================================================
 # UPDATED visualize timestep
@@ -446,30 +597,48 @@ def visualize_timestep(
     # IMAGE→TEXT
     _plot(M_img2text_raw, "IMAGE→TEXT Raw Sum", "heat_img2text_raw.png")
     _plot(M_img2text_soft, "IMAGE→TEXT Softmax", "heat_img2text_softmax.png")
-
+    
     # ------------------------------
-    # 5) 绘制 joint attention 全图 (N x N)
+    # 5) Joint attention 可视化（原始值版本）
     # ------------------------------
     for lid in layer_ids:
         rec = store.get(lid)
         if rec is None:
             continue
 
-        joint_attn = rec.joint_attn[0].detach().cpu().numpy()
-        n_tokens = joint_attn.shape[0]
+        joint_attn = rec.joint_attn[0].cpu().numpy()  # [N, N]
 
-        fig, ax = plt.subplots(figsize=(8, 8))
-        im = ax.imshow(joint_attn, aspect="equal", cmap="Reds")
-        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        ax.set_title(f"Joint Attention (Layer {lid}, N={n_tokens})")
-        ax.set_xlabel("Key")
-        ax.set_ylabel("Query")
-        plt.tight_layout()
+        N_I = rec.image_token_count
+        N_clip = token_offset
+        N_t5 = len(valid_token_idxs)
+        N = joint_attn.shape[0]
 
-        path = os.path.join(step_dir, f"joint_attn_layer-{lid}.png")
-        plt.savefig(path, dpi=150)
-        plt.close(fig)
-        print(f"[SAVE] {path}")
+        # ===== (a) 完整 N x N joint attention =====
+        full_path = os.path.join(step_dir, f"joint_attn_full_layer-{lid}.png")
+        draw_joint_attention_with_shading(
+            joint_attn=joint_attn,
+            image_token_count=N_I,
+            clip_token_count=N_clip,
+            t5_token_count=N_t5,
+            title=f"Joint Attention (Layer {lid})",
+            save_path=full_path,
+            cmap="Reds",
+        )
+        print(f"[SAVE] {full_path}")
+
+        # ===== (b) N x N_txt : All queries → Text tokens =====
+        sub_path = os.path.join(step_dir, f"joint_attn_to_text_layer-{lid}.png")
+        draw_joint_attention_to_text_with_shading(
+            joint_attn=joint_attn,
+            image_token_count=N_I,
+            clip_token_count=N_clip,
+            t5_token_count=N_t5,
+            save_path=sub_path,
+            cmap="Reds",
+        )
+        print(f"[SAVE] {sub_path}")
+
+
 
     # =====================================================================
     # 6) 原有 overlay grid: 图上标注 token 被关注的空间分布 (保持原逻辑)
@@ -578,6 +747,47 @@ def run_sd3_runtime_vis(
     t5_len = t5_inputs.input_ids.shape[1]
     total_context = prompt_emb.shape[1]
     token_offset = total_context - t5_len
+
+    def print_edge_tokens_once(clip_tokens, t5_tokens, valid_t5_len):
+        print("\n================ Token Boundary Check ================")
+
+        # ---- CLIP ----
+        print("[CLIP tokens]")
+        if len(clip_tokens) >= 10:
+            print("  first 5 :", ", ".join(clip_tokens[:5]))
+            print("  last  5 :", ", ".join(clip_tokens[-5:]))
+        else:
+            print("  tokens  :", ", ".join(clip_tokens))
+
+        # ---- T5 ----
+        t5_valid = t5_tokens[:valid_t5_len]
+        print("[T5 tokens]")
+        if len(t5_valid) >= 10:
+            print("  first 5 :", ", ".join(t5_valid[:5]))
+            print("  last  5 :", ", ".join(t5_valid[-5:]))
+        else:
+            print("  tokens  :", ", ".join(t5_valid))
+            print(len(t5_valid))
+
+        print("=====================================================\n")
+
+    # ==== CLIP tokens（SD3 中是 tokenizer_1）====
+    clip_inputs = base.tokenizer_1(
+        [prompt],
+        padding="max_length",
+        max_length=token_offset,
+        truncation=True,
+        return_tensors="pt",
+    )
+    clip_tokens = base.tokenizer_1.convert_ids_to_tokens(clip_inputs.input_ids[0])
+
+
+    print_edge_tokens_once(
+        clip_tokens=clip_tokens,
+        t5_tokens=t5_tokens,
+        valid_t5_len=len(valid_token_idxs),
+    )
+
 
     # 5. 注册 attention recorder
     store = CrossAttentionStore()

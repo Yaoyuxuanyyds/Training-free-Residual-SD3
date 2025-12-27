@@ -271,8 +271,8 @@ def run(args: argparse.Namespace):
             token_mask = token_mask[0].to(torch.bool)
 
             # Screen out the first token (e.g., <s>/<bos>)
-            if token_mask.numel() > 0:
-                token_mask[0] = False
+            # if token_mask.numel() > 0:
+            #     token_mask[0] = False
 
             if not args.ignore_padding:
                 token_mask = None
