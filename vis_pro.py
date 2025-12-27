@@ -29,6 +29,7 @@ class AttentionRecord:
     text2img: torch.Tensor   # [B, textLen, imgLen]
     img2text: torch.Tensor   # [B, textLen, imgLen]
     image_token_count: int
+    joint_attn: torch.Tensor  # [B, N, N], N = imgLen + textLen
 
 
 class CrossAttentionStore:
@@ -41,11 +42,13 @@ class CrossAttentionStore:
         text2img: torch.Tensor,
         img2text: torch.Tensor,
         image_token_count: int,
+        joint_attn: torch.Tensor,
     ):
         self._records[layer_idx] = AttentionRecord(
             text2img.detach().cpu(),
             img2text.detach().cpu(),
             image_token_count,
+            joint_attn.detach().cpu(),
         )
 
     def get(self, layer_idx: int) -> Optional[AttentionRecord]:
@@ -147,6 +150,7 @@ class JointAttentionRecorder(JointAttnProcessor2_0):
 
         if encoder_hidden_states is not None and context_length > 0 and self.store is not None:
             image_tokens = seq_len  # imgLen
+            joint_attn = attn_probs.mean(dim=1)  # [B, N, N]
 
             # ---------- ✔ TEXT → IMAGE ----------
             # attn_probs[:, :, text, img]
@@ -166,6 +170,7 @@ class JointAttentionRecorder(JointAttnProcessor2_0):
                 text2img=text2img_mean,
                 img2text=img2text_mean,
                 image_token_count=image_tokens,
+                joint_attn=joint_attn,
             )
 
         if encoder_output is not None:
@@ -294,6 +299,8 @@ def visualize_timestep(
     t5_tokens: List[str],
     valid_token_idxs: List[int],
     token_offset: int,
+    clip_token_count: int,
+    t5_token_count: int,
     layer_ids: Sequence[int],
     token_words: Sequence[str],
     out_dir: str,
@@ -442,8 +449,56 @@ def visualize_timestep(
     _plot(M_img2text_raw, "IMAGE→TEXT Raw Sum", "heat_img2text_raw.png")
     _plot(M_img2text_soft, "IMAGE→TEXT Softmax", "heat_img2text_softmax.png")
 
+    # ------------------------------
+    # 5) 绘制 joint attention 全图 (N x N)
+    # ------------------------------
+    for lid in layer_ids:
+        rec = store.get(lid)
+        if rec is None:
+            continue
+
+        joint_attn = rec.joint_attn[0].detach().cpu().numpy()
+        n_tokens = joint_attn.shape[0]
+        img_tokens = rec.image_token_count
+        clip_tokens = clip_token_count
+        t5_tokens_count = t5_token_count
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        im = ax.imshow(joint_attn, aspect="equal", cmap="Reds")
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        ax.set_title(f"Joint Attention (Layer {lid}, N={n_tokens})")
+        ax.set_xlabel("Key")
+        ax.set_ylabel("Query")
+
+        clip_start = img_tokens
+        t5_start = img_tokens + clip_tokens
+        for boundary in [clip_start - 0.5, t5_start - 0.5]:
+            ax.axvline(boundary, color="white", linewidth=1.0, alpha=0.8)
+            ax.axhline(boundary, color="white", linewidth=1.0, alpha=0.8)
+
+        def _region_mid(start: int, length: int) -> float:
+            return start + (length - 1) / 2.0 if length > 0 else start
+
+        xticks = [
+            _region_mid(0, img_tokens),
+            _region_mid(img_tokens, clip_tokens),
+            _region_mid(t5_start, t5_tokens_count),
+        ]
+        labels = ["IMG", "CLIP", "T5"]
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(labels)
+        ax.set_yticks(xticks)
+        ax.set_yticklabels(labels)
+
+        plt.tight_layout()
+
+        path = os.path.join(step_dir, f"joint_attn_layer-{lid}.png")
+        plt.savefig(path, dpi=150)
+        plt.close(fig)
+        print(f"[SAVE] {path}")
+
     # =====================================================================
-    # 5) 原有 overlay grid: 图上标注 token 被关注的空间分布 (保持原逻辑)
+    # 6) 原有 overlay grid: 图上标注 token 被关注的空间分布 (保持原逻辑)
     # =====================================================================
     for word in token_words:
         matches = [tok_idx for tok_idx in valid_token_idxs if word in t5_tokens[tok_idx]]
@@ -546,6 +601,15 @@ def run_sd3_runtime_vis(
     t5_mask = t5_inputs.attention_mask[0].tolist()
     valid_token_idxs = [i for i, m in enumerate(t5_mask) if m > 0]
 
+    clip_inputs = base.tokenizer_1(
+        [prompt],
+        padding="max_length",
+        max_length=77,
+        truncation=True,
+        return_tensors="pt",
+    )
+    clip_len = clip_inputs.input_ids.shape[1]
+
     t5_len = t5_inputs.input_ids.shape[1]
     total_context = prompt_emb.shape[1]
     token_offset = total_context - t5_len
@@ -598,6 +662,8 @@ def run_sd3_runtime_vis(
                 t5_tokens=t5_tokens,
                 valid_token_idxs=valid_token_idxs,
                 token_offset=token_offset,
+                clip_token_count=clip_len,
+                t5_token_count=t5_len,
                 layer_ids=layer_ids,
                 token_words=token_words,
                 out_dir=out_dir,
@@ -677,9 +743,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
 
 
 

@@ -28,6 +28,7 @@ SEED=42
 echo "[INFO] Running visualization"
 
 OUTPUT_DIR="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/attn_vis/test4/attn_vis_out-BASE"
+# joint attention maps saved as: ${OUTPUT_DIR}/tXXXX/joint_attn_layer-<layer>.png
 
 TIMESTEPS="0 2 4 6 8 9 10 11 12 14 16 18 20 22 24 27"
 
