@@ -327,6 +327,7 @@ def draw_joint_attention_with_shading(
         joint_attn,
         cmap="Reds",
         aspect="equal",
+        interpolation="nearest",  # ★ 唯一关键修改
     )
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
@@ -407,7 +408,8 @@ def draw_joint_attention_to_text_with_shading(
     im = ax.imshow(
         joint_to_text,
         cmap=cmap,
-        aspect="auto",
+        aspect="equal",
+        interpolation="nearest",  # ★ 唯一关键修改
     )
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
@@ -626,17 +628,17 @@ def visualize_timestep(
         )
         print(f"[SAVE] {full_path}")
 
-        # ===== (b) N x N_txt : All queries → Text tokens =====
-        sub_path = os.path.join(step_dir, f"joint_attn_to_text_layer-{lid}.png")
-        draw_joint_attention_to_text_with_shading(
-            joint_attn=joint_attn,
-            image_token_count=N_I,
-            clip_token_count=N_clip,
-            t5_token_count=N_t5,
-            save_path=sub_path,
-            cmap="Reds",
-        )
-        print(f"[SAVE] {sub_path}")
+        # # ===== (b) N x N_txt : All queries → Text tokens =====
+        # sub_path = os.path.join(step_dir, f"joint_attn_to_text_layer-{lid}.png")
+        # draw_joint_attention_to_text_with_shading(
+        #     joint_attn=joint_attn,
+        #     image_token_count=N_I,
+        #     clip_token_count=N_clip,
+        #     t5_token_count=N_t5,
+        #     save_path=sub_path,
+        #     cmap="Reds",
+        # )
+        # print(f"[SAVE] {sub_path}")
 
 
 
@@ -760,11 +762,14 @@ def run_sd3_runtime_vis(
             print("  tokens  :", ", ".join(clip_tokens))
 
         # ---- T5 ----
+        print(f"T5 tokens (all):{t5_tokens}")
+        print(f"Length of T5 tokens (all):{len(t5_tokens)}")
         t5_valid = t5_tokens[:valid_t5_len]
         print("[T5 tokens]")
         if len(t5_valid) >= 10:
             print("  first 5 :", ", ".join(t5_valid[:5]))
             print("  last  5 :", ", ".join(t5_valid[-5:]))
+            print(len(t5_valid))
         else:
             print("  tokens  :", ", ".join(t5_valid))
             print(len(t5_valid))
@@ -781,7 +786,7 @@ def run_sd3_runtime_vis(
     )
     clip_tokens = base.tokenizer_1.convert_ids_to_tokens(clip_inputs.input_ids[0])
 
-
+    print(f"T5 valid tokens:{valid_token_idxs}")
     print_edge_tokens_once(
         clip_tokens=clip_tokens,
         t5_tokens=t5_tokens,

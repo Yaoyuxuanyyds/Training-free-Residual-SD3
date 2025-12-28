@@ -7,17 +7,17 @@ HEIGHT=1024
 WIDTH=1024
 LAYERS="0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21"
 
-PROMPT="A cozy living room with a wooden coffee table, a white mug, a small potted plant, and stacked books, warm natural light from a window."
-TOKEN_WORDS="A cozy living room with a wooden coffee table , a white mug , a small pot ted plant , and stacked books , warm natural light from a window"
+# PROMPT="A cozy living room with a wooden coffee table, a white mug, a small potted plant, and stacked books, warm natural light from a window."
+# TOKEN_WORDS="A cozy living room with a wooden coffee table , a white mug , a small pot ted plant , and stacked books , warm natural light from a window"
 
-# PROMPT="Three stacked books."
-# TOKEN_WORDS="Three stacked books"
+PROMPT="The photo of a green traffic light."
+TOKEN_WORDS="The photo of a green traffic light ."
 
 RES_ORIGIN=1
 
-RES_TARGET="$(seq -s ' ' 4 13)"
+RES_TARGET="$(seq -s ' ' 2 13)"
 
-RES_WEIGHT="$(printf '0.0 %.0s' $(seq 4 13))"
+RES_WEIGHT="$(printf '0.0 %.0s' $(seq 2 13))"
 
 
 
@@ -27,7 +27,7 @@ SEED=42
 
 echo "[INFO] Running visualization"
 
-OUTPUT_DIR="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/attn_vis/test3/attn_vis_out-BASE"
+OUTPUT_DIR="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/attn_vis/test2/attn_vis_out-BASE"
 # joint attention maps saved as: ${OUTPUT_DIR}/tXXXX/joint_attn_layer-<layer>.png
 
 TIMESTEPS="0 2 4 6 8 9 10 11 12 14 16 18 20 22 24 27"
