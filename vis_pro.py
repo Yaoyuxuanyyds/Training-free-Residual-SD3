@@ -463,6 +463,54 @@ def draw_joint_attention_to_text_with_shading(
     plt.close(fig)
 
 
+def draw_img_to_text_joint_attention(
+    joint_attn: np.ndarray,
+    image_token_count: int,
+    clip_token_count: int,
+    t5_token_count: int,
+    save_path: str,
+    cmap: str = "Reds",
+):
+    """
+    绘制 joint attention 的子块：
+      - 行：Image queries (N_img)
+      - 列：Text tokens (CLIP + T5)
+    """
+    N_I = image_token_count
+    N_clip = clip_token_count
+    N_t5 = t5_token_count
+
+    # 裁剪：Image queries → Text keys
+    img_to_text = joint_attn[:N_I, N_I:]  # [N_img, N_txt]
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+
+    im = ax.imshow(
+        img_to_text,
+        cmap=cmap,
+        aspect="equal",
+        interpolation="nearest",
+    )
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    # x 轴（Text tokens）
+    shade_region(ax, 0, N_clip, color="#55A868", alpha=0.1, axis="x")       # CLIP
+    shade_region(ax, N_clip, N_clip + N_t5, color="#DDDDDD", alpha=0.1, axis="x")  # T5
+
+    # y 轴（Image queries）
+    shade_region(ax, 0, N_I, color="#4C72B0", alpha=0.1, axis="y")
+
+    ax.set_xticks([N_clip])
+    ax.set_xticklabels(["T5 start"], rotation=90, fontsize=9)
+
+    ax.set_yticks([])
+    ax.set_title("Joint Attention: Image → Text")
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close(fig)
+
+
 # ============================================================
 # UPDATED visualize timestep
 # ============================================================
@@ -715,18 +763,47 @@ def visualize_timestep(
         )
         print(f"[SAVE] {full_path}")
 
-        # # ===== (b) N x N_txt : All queries → Text tokens =====
-        # sub_path = os.path.join(step_dir, f"joint_attn_to_text_layer-{lid}.png")
-        # draw_joint_attention_to_text_with_shading(
-        #     joint_attn=joint_attn,
-        #     image_token_count=N_I,
-        #     clip_token_count=N_clip,
-        #     t5_token_count=N_t5,
-        #     save_path=sub_path,
-        #     cmap="Reds",
-        # )
-        # print(f"[SAVE] {sub_path}")
+        # ===== (b) N_img x N_txt : Image queries → Text tokens =====
+        sub_path = os.path.join(step_dir, f"joint_attn_img_to_text_layer-{lid}.png")
+        draw_img_to_text_joint_attention(
+            joint_attn=joint_attn,
+            image_token_count=N_I,
+            clip_token_count=N_clip,
+            t5_token_count=N_t5,
+            save_path=sub_path,
+            cmap="Reds",
+        )
+        print(f"[SAVE] {sub_path}")
 
+
+    # ------------------------------
+    # 5.5) 指定 layer 的 per-head joint attention
+    # ------------------------------
+    if per_head_layer is not None:
+        rec = store.get(per_head_layer)
+        if rec is not None and rec.joint_attn_heads is not None:
+            per_head_dir = os.path.join(step_dir, f"per_head_layer-{per_head_layer}")
+            os.makedirs(per_head_dir, exist_ok=True)
+
+            N_I = rec.image_token_count
+            N_clip = token_offset
+            N_t5 = len(valid_token_idxs)
+
+            for h in range(rec.joint_attn_heads.shape[0]):
+                joint_attn = rec.joint_attn_heads[h].cpu().numpy()
+                full_path = os.path.join(
+                    per_head_dir, f"joint_attn_full_layer-{per_head_layer}_head-{h}.png"
+                )
+                draw_joint_attention_with_shading(
+                    joint_attn=joint_attn,
+                    image_token_count=N_I,
+                    clip_token_count=N_clip,
+                    t5_token_count=N_t5,
+                    title=f"Joint Attention (Layer {per_head_layer}, Head {h})",
+                    save_path=full_path,
+                    cmap="Reds",
+                )
+                print(f"[SAVE] {full_path}")
 
     # ------------------------------
     # 5.5) 指定 layer 的 per-head joint attention
@@ -1044,4 +1121,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
