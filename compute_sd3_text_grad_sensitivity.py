@@ -288,14 +288,13 @@ def run(args: argparse.Namespace):
         gt_tensor = pil_to_tensor(gt_pil, device=device)
         z0 = encode_image_to_latent(base, gt_tensor)
 
-        with torch.no_grad():
-            prompt_emb, pooled_emb, token_mask = base.encode_prompt([prompt], batch_size=1)
-            token_mask = token_mask[0].to(torch.bool)
-            if not args.ignore_padding:
-                token_mask = None
+        prompt_emb, pooled_emb, token_mask = base.encode_prompt([prompt], batch_size=1)
+        token_mask = token_mask[0].to(torch.bool)
+        if not args.ignore_padding:
+            token_mask = None
 
-        prompt_emb = prompt_emb.to(dtype=denoiser.dtype)
-        pooled_emb = pooled_emb.to(dtype=denoiser.dtype)
+        prompt_emb = prompt_emb.to(dtype=denoiser.dtype).requires_grad_(True)
+        pooled_emb = pooled_emb.to(dtype=denoiser.dtype).requires_grad_(True)
 
         layer_sum_scores = {layer: None for layer in target_layers}
         effective_counts = {layer: 0 for layer in target_layers}
