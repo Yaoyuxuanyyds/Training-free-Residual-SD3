@@ -30,11 +30,15 @@ class AttentionRecord:
     img2text: torch.Tensor   # [B, textLen, imgLen]
     image_token_count: int
     joint_attn: torch.Tensor  # [B, N, N], N = imgLen + textLen
+    text2img_heads: Optional[torch.Tensor] = None  # [H, textLen, imgLen]
+    img2text_heads: Optional[torch.Tensor] = None  # [H, textLen, imgLen]
+    joint_attn_heads: Optional[torch.Tensor] = None  # [H, N, N]
 
 
 class CrossAttentionStore:
-    def __init__(self):
+    def __init__(self, per_head_layer: Optional[int] = None):
         self._records: Dict[int, AttentionRecord] = {}
+        self.per_head_layer = per_head_layer
 
     def add(
         self,
@@ -43,12 +47,18 @@ class CrossAttentionStore:
         img2text: torch.Tensor,
         image_token_count: int,
         joint_attn: torch.Tensor,
+        text2img_heads: Optional[torch.Tensor] = None,
+        img2text_heads: Optional[torch.Tensor] = None,
+        joint_attn_heads: Optional[torch.Tensor] = None,
     ):
         self._records[layer_idx] = AttentionRecord(
             text2img.detach().cpu(),
             img2text.detach().cpu(),
             image_token_count,
             joint_attn.detach().cpu(),
+            text2img_heads.detach().cpu() if text2img_heads is not None else None,
+            img2text_heads.detach().cpu() if img2text_heads is not None else None,
+            joint_attn_heads.detach().cpu() if joint_attn_heads is not None else None,
         )
 
     def get(self, layer_idx: int) -> Optional[AttentionRecord]:
@@ -151,19 +161,27 @@ class JointAttentionRecorder(JointAttnProcessor2_0):
         if encoder_hidden_states is not None and context_length > 0 and self.store is not None:
             image_tokens = seq_len  # imgLen
             joint_attn = attn_probs.mean(dim=1)  # [B, N, N]
+            joint_attn_heads = None
 
             # ---------- ✔ TEXT → IMAGE ----------
             # attn_probs[:, :, text, img]
             text2img_slice = attn_probs[:, :, image_tokens:, :image_tokens]
             text2img_mean = text2img_slice.mean(dim=1)  # [B, textLen, imgLen]
+            text2img_heads = None
 
             # ---------- ✔ IMAGE → TEXT ----------
             # attn_probs[:, :, img, text]
             img2text_slice = attn_probs[:, :, :image_tokens, image_tokens:]
             img2text_mean = img2text_slice.mean(dim=1)  # [B, imgLen, textLen]
+            img2text_heads = None
 
             # 转置到和 text2img 同维度：[B, textLen, imgLen]
             img2text_mean = img2text_mean.transpose(1, 2)
+
+            if self.store.per_head_layer is not None and self.layer_idx == self.store.per_head_layer:
+                joint_attn_heads = attn_probs[0]  # [H, N, N]
+                text2img_heads = text2img_slice[0]  # [H, textLen, imgLen]
+                img2text_heads = img2text_slice[0].transpose(1, 2)  # [H, textLen, imgLen]
 
             self.store.add(
                 self.layer_idx,
@@ -171,6 +189,9 @@ class JointAttentionRecorder(JointAttnProcessor2_0):
                 img2text=img2text_mean,
                 image_token_count=image_tokens,
                 joint_attn=joint_attn,
+                text2img_heads=text2img_heads,
+                img2text_heads=img2text_heads,
+                joint_attn_heads=joint_attn_heads,
             )
 
         if encoder_output is not None:
@@ -457,6 +478,7 @@ def visualize_timestep(
     out_dir: str,
     cmap: str,
     alpha: float,
+    per_head_layer: Optional[int],
 ):
     """
     在单一 timestep 下生成：
@@ -545,7 +567,7 @@ def visualize_timestep(
     # 4) 绘制四张 heatmap
     # ------------------------------
 
-    def _plot(M: torch.Tensor, title: str, fname: str, fmt="%.4f"):
+    def _plot(M: torch.Tensor, title: str, fname: str, row_labels: Sequence[str], fmt="%.4f"):
         """
         绘制热力图 + 在每个格子标注对应数值
         M: [L, K]
@@ -568,7 +590,7 @@ def visualize_timestep(
         ax.set_xticks(range(K))
         ax.set_xticklabels(selected_token_strings, rotation=90, fontsize=8)
         ax.set_yticks(range(L))
-        ax.set_yticklabels([str(l) for l in layer_list])
+        ax.set_yticklabels(row_labels)
 
         # -------- ★ 在每个格子写数值 ★ --------
         for i in range(L):           # row: layer index
@@ -593,12 +615,77 @@ def visualize_timestep(
 
 
     # TEXT→IMAGE
-    _plot(M_text2img_raw, "TEXT→IMAGE Raw Sum", "heat_text2img_raw.png")
-    _plot(M_text2img_soft, "TEXT→IMAGE Softmax", "heat_text2img_softmax.png")
+    _plot(
+        M_text2img_raw,
+        "TEXT→IMAGE Raw Sum",
+        "heat_text2img_raw.png",
+        [str(l) for l in layer_list],
+    )
+    _plot(
+        M_text2img_soft,
+        "TEXT→IMAGE Softmax",
+        "heat_text2img_softmax.png",
+        [str(l) for l in layer_list],
+    )
 
     # IMAGE→TEXT
-    _plot(M_img2text_raw, "IMAGE→TEXT Raw Sum", "heat_img2text_raw.png")
-    _plot(M_img2text_soft, "IMAGE→TEXT Softmax", "heat_img2text_softmax.png")
+    _plot(
+        M_img2text_raw,
+        "IMAGE→TEXT Raw Sum",
+        "heat_img2text_raw.png",
+        [str(l) for l in layer_list],
+    )
+    _plot(
+        M_img2text_soft,
+        "IMAGE→TEXT Softmax",
+        "heat_img2text_softmax.png",
+        [str(l) for l in layer_list],
+    )
+
+    # ------------------------------
+    # 4.5) 指定 layer 的 per-head 可视化
+    # ------------------------------
+    if per_head_layer is not None:
+        rec = store.get(per_head_layer)
+        if rec is not None and rec.text2img_heads is not None and rec.img2text_heads is not None:
+            per_head_dir = os.path.join(step_dir, f"per_head_layer-{per_head_layer}")
+            os.makedirs(per_head_dir, exist_ok=True)
+
+            t2i_heads = rec.text2img_heads[:, selected_token_indices, :]  # [H, K, imgLen]
+            i2t_heads = rec.img2text_heads[:, selected_token_indices, :]  # [H, K, imgLen]
+
+            M_text2img_head_raw = t2i_heads.sum(dim=2)  # [H, K]
+            M_text2img_head_soft = torch.softmax(M_text2img_head_raw, dim=1)
+
+            M_img2text_head_raw = i2t_heads.sum(dim=2)  # [H, K]
+            M_img2text_head_soft = torch.softmax(M_img2text_head_raw, dim=1)
+
+            head_labels = [f"h{h}" for h in range(M_text2img_head_raw.shape[0])]
+
+            _plot(
+                M_text2img_head_raw,
+                f"TEXT→IMAGE Raw Sum (Layer {per_head_layer})",
+                os.path.join(f"per_head_layer-{per_head_layer}", "heat_text2img_raw_perhead.png"),
+                head_labels,
+            )
+            _plot(
+                M_text2img_head_soft,
+                f"TEXT→IMAGE Softmax (Layer {per_head_layer})",
+                os.path.join(f"per_head_layer-{per_head_layer}", "heat_text2img_softmax_perhead.png"),
+                head_labels,
+            )
+            _plot(
+                M_img2text_head_raw,
+                f"IMAGE→TEXT Raw Sum (Layer {per_head_layer})",
+                os.path.join(f"per_head_layer-{per_head_layer}", "heat_img2text_raw_perhead.png"),
+                head_labels,
+            )
+            _plot(
+                M_img2text_head_soft,
+                f"IMAGE→TEXT Softmax (Layer {per_head_layer})",
+                os.path.join(f"per_head_layer-{per_head_layer}", "heat_img2text_softmax_perhead.png"),
+                head_labels,
+            )
     
     # ------------------------------
     # 5) Joint attention 可视化（原始值版本）
@@ -640,6 +727,35 @@ def visualize_timestep(
         # )
         # print(f"[SAVE] {sub_path}")
 
+
+    # ------------------------------
+    # 5.5) 指定 layer 的 per-head joint attention
+    # ------------------------------
+    if per_head_layer is not None:
+        rec = store.get(per_head_layer)
+        if rec is not None and rec.joint_attn_heads is not None:
+            per_head_dir = os.path.join(step_dir, f"per_head_layer-{per_head_layer}")
+            os.makedirs(per_head_dir, exist_ok=True)
+
+            N_I = rec.image_token_count
+            N_clip = token_offset
+            N_t5 = len(valid_token_idxs)
+
+            for h in range(rec.joint_attn_heads.shape[0]):
+                joint_attn = rec.joint_attn_heads[h].cpu().numpy()
+                full_path = os.path.join(
+                    per_head_dir, f"joint_attn_full_layer-{per_head_layer}_head-{h}.png"
+                )
+                draw_joint_attention_with_shading(
+                    joint_attn=joint_attn,
+                    image_token_count=N_I,
+                    clip_token_count=N_clip,
+                    t5_token_count=N_t5,
+                    title=f"Joint Attention (Layer {per_head_layer}, Head {h})",
+                    save_path=full_path,
+                    cmap="Reds",
+                )
+                print(f"[SAVE] {full_path}")
 
 
     # =====================================================================
@@ -711,6 +827,7 @@ def run_sd3_runtime_vis(
     residual_origin_layer: Optional[int],
     residual_target_layers: Optional[List[int]],
     residual_weights: Optional[List[float]],
+    per_head_layer: Optional[int],
 ):
     os.makedirs(out_dir, exist_ok=True)
 
@@ -795,7 +912,9 @@ def run_sd3_runtime_vis(
 
 
     # 5. 注册 attention recorder
-    store = CrossAttentionStore()
+    if per_head_layer is not None and per_head_layer not in layer_ids:
+        print(f"[WARN] per-head layer {per_head_layer} not in --layers; per-head outputs will be empty.")
+    store = CrossAttentionStore(per_head_layer=per_head_layer)
     register_attention_recorders(base.denoiser, store, target_layers=layer_ids)
 
     # 6. Euler 采样循环
@@ -847,6 +966,7 @@ def run_sd3_runtime_vis(
                 out_dir=out_dir,
                 cmap=cmap,
                 alpha=alpha,
+                per_head_layer=per_head_layer,
             )
 
     print(f"[DONE] All visualizations saved under: {out_dir}")
@@ -890,6 +1010,8 @@ def parse_args():
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
+    parser.add_argument("--per-head-layer", type=int, default=None,
+                        help="Layer index to dump per-head joint attention maps and per-head summaries.")
 
     return parser.parse_args()
 
@@ -916,17 +1038,10 @@ def main():
         residual_origin_layer=args.residual_origin_layer,
         residual_target_layers=args.residual_target_layers,
         residual_weights=args.residual_weights,
+        per_head_layer=args.per_head_layer,
     )
 
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
 
