@@ -293,11 +293,8 @@ def run(args: argparse.Namespace):
         if not args.ignore_padding:
             token_mask = None
 
-        prompt_emb.requires_grad_(True)
-        pooled_emb.requires_grad_(True)
-
-        prompt_emb = prompt_emb.to(dtype=denoiser.dtype)
-        pooled_emb = pooled_emb.to(dtype=denoiser.dtype)
+        prompt_emb = prompt_emb.to(dtype=denoiser.dtype).requires_grad_(True)
+        pooled_emb = pooled_emb.to(dtype=denoiser.dtype).requires_grad_(True)
 
         layer_sum_scores = {layer: None for layer in target_layers}
         effective_counts = {layer: 0 for layer in target_layers}
