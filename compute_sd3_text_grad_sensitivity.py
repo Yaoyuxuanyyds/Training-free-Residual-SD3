@@ -82,7 +82,15 @@ def build_noisy_latent_like_training(
     bsz = clean_latent.shape[0]
     t_tensor = torch.full((bsz,), timestep_idx, device=device, dtype=torch.long)
     s = (t_tensor.float() / float(total)).view(bsz, 1, 1, 1)
-    x1 = torch.randn_like(clean_latent, generator=generator)
+    if generator is None:
+        x1 = torch.randn_like(clean_latent)
+    else:
+        x1 = torch.randn(
+            clean_latent.shape,
+            device=clean_latent.device,
+            dtype=clean_latent.dtype,
+            generator=generator,
+        )
     noisy = (1.0 - s) * clean_latent + s * x1
     return noisy, t_tensor
 
@@ -302,33 +310,34 @@ def run(args: argparse.Namespace):
                 )
                 z_t = z_t.to(dtype=denoiser.dtype)
 
-                outputs = denoiser(
-                    hidden_states=z_t,
-                    timestep=t_tensor,
-                    encoder_hidden_states=prompt_emb,
-                    pooled_projections=pooled_emb,
-                    return_dict=False,
-                    output_hidden_states=True,
-                )
-
-                pred = outputs["sample"]
-                y = 0.5 * (pred.float() ** 2).sum()
-
-                txt_hidden_states_list = outputs["txt_hidden_states"]
-                max_layer = max(target_layers)
-                if max_layer >= len(txt_hidden_states_list):
-                    raise ValueError(
-                        f"Requested layer {max_layer} but only {len(txt_hidden_states_list)} layers were recorded."
+                with torch.enable_grad():
+                    outputs = denoiser(
+                        hidden_states=z_t,
+                        timestep=t_tensor,
+                        encoder_hidden_states=prompt_emb,
+                        pooled_projections=pooled_emb,
+                        return_dict=False,
+                        output_hidden_states=True,
                     )
-                target_states = [txt_hidden_states_list[layer][0] for layer in target_layers]
 
-                grads = torch.autograd.grad(
-                    y,
-                    target_states,
-                    retain_graph=False,
-                    create_graph=False,
-                    allow_unused=True,
-                )
+                    pred = outputs["sample"]
+                    y = 0.5 * (pred.float() ** 2).sum()
+
+                    txt_hidden_states_list = outputs["txt_hidden_states"]
+                    max_layer = max(target_layers)
+                    if max_layer >= len(txt_hidden_states_list):
+                        raise ValueError(
+                            f"Requested layer {max_layer} but only {len(txt_hidden_states_list)} layers were recorded."
+                        )
+                    target_states = [txt_hidden_states_list[layer][0] for layer in target_layers]
+
+                    grads = torch.autograd.grad(
+                        y,
+                        target_states,
+                        retain_graph=False,
+                        create_graph=False,
+                        allow_unused=True,
+                    )
 
                 for layer, grad in zip(target_layers, grads):
                     if grad is None:

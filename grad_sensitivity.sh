@@ -18,10 +18,10 @@ cd /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3
 
 # Single prompt example
 python compute_sd3_text_grad_sensitivity.py \
-    --prompt "A cozy living room with a wooden coffee table, a white mug, a small potted plant, and stacked books, warm natural light from a window." \
+    --prompt "The photo of a green traffic light." \
     --image /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/image0.png \
     --timestep-idx 945 \
     --num-seeds 2 \
-    --num-timesteps 3 \
+    --num-timesteps 10 \
     --ignore-padding \
     --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/vis/grad-metrics
