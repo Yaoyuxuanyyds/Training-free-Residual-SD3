@@ -36,9 +36,9 @@ class AttentionRecord:
 
 
 class CrossAttentionStore:
-    def __init__(self, per_head_layer: Optional[int] = None):
+    def __init__(self, per_head_layers: Optional[Sequence[int]] = None):
         self._records: Dict[int, AttentionRecord] = {}
-        self.per_head_layer = per_head_layer
+        self.per_head_layers = set(per_head_layers or [])
 
     def add(
         self,
@@ -178,7 +178,7 @@ class JointAttentionRecorder(JointAttnProcessor2_0):
             # 转置到和 text2img 同维度：[B, textLen, imgLen]
             img2text_mean = img2text_mean.transpose(1, 2)
 
-            if self.store.per_head_layer is not None and self.layer_idx == self.store.per_head_layer:
+            if self.store.per_head_layers and self.layer_idx in self.store.per_head_layers:
                 joint_attn_heads = attn_probs[0]  # [H, N, N]
                 text2img_heads = text2img_slice[0]  # [H, textLen, imgLen]
                 img2text_heads = img2text_slice[0].transpose(1, 2)  # [H, textLen, imgLen]
@@ -526,7 +526,7 @@ def visualize_timestep(
     out_dir: str,
     cmap: str,
     alpha: float,
-    per_head_layer: Optional[int],
+    per_head_layers: Optional[Sequence[int]],
 ):
     """
     在单一 timestep 下生成：
@@ -693,9 +693,12 @@ def visualize_timestep(
     # ------------------------------
     # 4.5) 指定 layer 的 per-head 可视化
     # ------------------------------
-    if per_head_layer is not None:
-        rec = store.get(per_head_layer)
-        if rec is not None and rec.text2img_heads is not None and rec.img2text_heads is not None:
+    if per_head_layers:
+        for per_head_layer in per_head_layers:
+            rec = store.get(per_head_layer)
+            if rec is None or rec.text2img_heads is None or rec.img2text_heads is None:
+                continue
+
             per_head_dir = os.path.join(step_dir, f"per_head_layer-{per_head_layer}")
             os.makedirs(per_head_dir, exist_ok=True)
 
@@ -779,38 +782,12 @@ def visualize_timestep(
     # ------------------------------
     # 5.5) 指定 layer 的 per-head joint attention
     # ------------------------------
-    if per_head_layer is not None:
-        rec = store.get(per_head_layer)
-        if rec is not None and rec.joint_attn_heads is not None:
-            per_head_dir = os.path.join(step_dir, f"per_head_layer-{per_head_layer}")
-            os.makedirs(per_head_dir, exist_ok=True)
+    if per_head_layers:
+        for per_head_layer in per_head_layers:
+            rec = store.get(per_head_layer)
+            if rec is None or rec.joint_attn_heads is None:
+                continue
 
-            N_I = rec.image_token_count
-            N_clip = token_offset
-            N_t5 = len(valid_token_idxs)
-
-            for h in range(rec.joint_attn_heads.shape[0]):
-                joint_attn = rec.joint_attn_heads[h].cpu().numpy()
-                full_path = os.path.join(
-                    per_head_dir, f"joint_attn_full_layer-{per_head_layer}_head-{h}.png"
-                )
-                draw_joint_attention_with_shading(
-                    joint_attn=joint_attn,
-                    image_token_count=N_I,
-                    clip_token_count=N_clip,
-                    t5_token_count=N_t5,
-                    title=f"Joint Attention (Layer {per_head_layer}, Head {h})",
-                    save_path=full_path,
-                    cmap="Reds",
-                )
-                print(f"[SAVE] {full_path}")
-
-    # ------------------------------
-    # 5.5) 指定 layer 的 per-head joint attention
-    # ------------------------------
-    if per_head_layer is not None:
-        rec = store.get(per_head_layer)
-        if rec is not None and rec.joint_attn_heads is not None:
             per_head_dir = os.path.join(step_dir, f"per_head_layer-{per_head_layer}")
             os.makedirs(per_head_dir, exist_ok=True)
 
@@ -904,7 +881,7 @@ def run_sd3_runtime_vis(
     residual_origin_layer: Optional[int],
     residual_target_layers: Optional[List[int]],
     residual_weights: Optional[List[float]],
-    per_head_layer: Optional[int],
+    per_head_layers: Optional[Sequence[int]],
 ):
     os.makedirs(out_dir, exist_ok=True)
 
@@ -989,9 +966,11 @@ def run_sd3_runtime_vis(
 
 
     # 5. 注册 attention recorder
-    if per_head_layer is not None and per_head_layer not in layer_ids:
-        print(f"[WARN] per-head layer {per_head_layer} not in --layers; per-head outputs will be empty.")
-    store = CrossAttentionStore(per_head_layer=per_head_layer)
+    if per_head_layers:
+        missing_layers = sorted(set(per_head_layers) - set(layer_ids))
+        if missing_layers:
+            print(f"[WARN] per-head layers {missing_layers} not in --layers; per-head outputs will be empty.")
+    store = CrossAttentionStore(per_head_layers=per_head_layers)
     register_attention_recorders(base.denoiser, store, target_layers=layer_ids)
 
     # 6. Euler 采样循环
@@ -1043,7 +1022,7 @@ def run_sd3_runtime_vis(
                 out_dir=out_dir,
                 cmap=cmap,
                 alpha=alpha,
-                per_head_layer=per_head_layer,
+                per_head_layers=per_head_layers,
             )
 
     print(f"[DONE] All visualizations saved under: {out_dir}")
@@ -1087,8 +1066,8 @@ def parse_args():
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
-    parser.add_argument("--per-head-layer", type=int, default=None,
-                        help="Layer index to dump per-head joint attention maps and per-head summaries.")
+    parser.add_argument("--per-head-layers", type=int, nargs="+", default=None,
+                        help="Layer indices to dump per-head joint attention maps and per-head summaries.")
 
     return parser.parse_args()
 
@@ -1115,7 +1094,7 @@ def main():
         residual_origin_layer=args.residual_origin_layer,
         residual_target_layers=args.residual_target_layers,
         residual_weights=args.residual_weights,
-        per_head_layer=args.per_head_layer,
+        per_head_layers=args.per_head_layers,
     )
 
 
