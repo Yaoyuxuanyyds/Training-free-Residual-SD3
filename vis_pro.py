@@ -805,6 +805,35 @@ def visualize_timestep(
                 )
                 print(f"[SAVE] {full_path}")
 
+    # ------------------------------
+    # 5.5) 指定 layer 的 per-head joint attention
+    # ------------------------------
+    if per_head_layer is not None:
+        rec = store.get(per_head_layer)
+        if rec is not None and rec.joint_attn_heads is not None:
+            per_head_dir = os.path.join(step_dir, f"per_head_layer-{per_head_layer}")
+            os.makedirs(per_head_dir, exist_ok=True)
+
+            N_I = rec.image_token_count
+            N_clip = token_offset
+            N_t5 = len(valid_token_idxs)
+
+            for h in range(rec.joint_attn_heads.shape[0]):
+                joint_attn = rec.joint_attn_heads[h].cpu().numpy()
+                full_path = os.path.join(
+                    per_head_dir, f"joint_attn_full_layer-{per_head_layer}_head-{h}.png"
+                )
+                draw_joint_attention_with_shading(
+                    joint_attn=joint_attn,
+                    image_token_count=N_I,
+                    clip_token_count=N_clip,
+                    t5_token_count=N_t5,
+                    title=f"Joint Attention (Layer {per_head_layer}, Head {h})",
+                    save_path=full_path,
+                    cmap="Reds",
+                )
+                print(f"[SAVE] {full_path}")
+
 
     # =====================================================================
     # 6) 原有 overlay grid: 图上标注 token 被关注的空间分布 (保持原逻辑)
