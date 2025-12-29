@@ -43,6 +43,10 @@ def load_and_resize_pil(image_source, height: int, width: int) -> Image.Image:
             raise ValueError(f"Unexpected tensor shape for image: {tensor.shape}")
         if tensor.min() < 0:
             tensor = (tensor + 1.0) / 2.0
+        if tensor.dtype == torch.uint8:
+            tensor = tensor.float() / 255.0
+        elif tensor.is_floating_point() and tensor.max() > 1.0:
+            tensor = tensor / 255.0
         tensor = tensor.clamp(0.0, 1.0)
         import torchvision.transforms as T
         to_pil = T.ToPILImage()
@@ -306,6 +310,11 @@ def run(args: argparse.Namespace):
         prompt_preview = prompt if len(prompt) <= 60 else prompt[:57] + "..."
         gt_pil = load_and_resize_pil(image_data, args.height, args.width)
         gt_tensor = pil_to_tensor(gt_pil, device=device)
+        if gt_tensor.min() < 0 or gt_tensor.max() > 1:
+            raise ValueError(
+                f"gt_tensor values out of [0,1] after pil_to_tensor: "
+                f"min={gt_tensor.min().item():.4f}, max={gt_tensor.max().item():.4f}"
+            )
         z0 = encode_image_to_latent(base, gt_tensor)
 
         prompt_emb, pooled_emb, token_mask = base.encode_prompt([prompt], batch_size=1)
