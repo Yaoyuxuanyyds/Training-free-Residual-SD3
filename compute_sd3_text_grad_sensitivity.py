@@ -390,8 +390,8 @@ def run(args: argparse.Namespace):
                         encoder_hidden_states=prompt_emb,
                         pooled_projections=pooled_emb,
                         return_dict=False,
-                        output_hidden_states=False,
-                        output_text_inputs=True,
+                        output_hidden_states=True,
+                        output_text_inputs=False,
                         force_txt_grad=args.force_txt_grad,
                         residual_stop_grad=False,
                     )
@@ -401,11 +401,11 @@ def run(args: argparse.Namespace):
                         print(f"[WARN] Non-finite denoiser output at timestep={timestep_idx}, seed={seed}.")
                     y = 0.5 * (pred.float() ** 2).sum()
 
-                    txt_hidden_states_list = outputs.get("txt_input_states")
+                    txt_hidden_states_list = outputs.get("txt_hidden_states")
                     if txt_hidden_states_list is None:
                         raise KeyError(
-                            "Missing txt_input_states in denoiser outputs; "
-                            "ensure output_text_inputs=True in the denoiser forward."
+                            "Missing txt_hidden_states in denoiser outputs; "
+                            "ensure output_hidden_states=True in the denoiser forward."
                         )
                     max_layer = max(target_layers)
                     if max_layer >= len(txt_hidden_states_list):
