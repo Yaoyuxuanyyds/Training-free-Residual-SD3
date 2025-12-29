@@ -227,6 +227,11 @@ def run(args: argparse.Namespace):
         strict=args.lora_strict,
     )
     denoiser.eval().requires_grad_(False)
+    denoiser_base = getattr(denoiser, "module", denoiser)
+    denoiser_base = getattr(denoiser_base, "base_model", denoiser_base)
+    if getattr(denoiser_base, "gradient_checkpointing", False):
+        print("[INFO] Disabling gradient checkpointing to capture intermediate text gradients.")
+        denoiser_base.gradient_checkpointing = False
 
     target_layers = sorted(set(args.layers))
     if not target_layers:
