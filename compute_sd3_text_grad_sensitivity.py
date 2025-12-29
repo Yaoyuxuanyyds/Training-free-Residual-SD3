@@ -184,6 +184,47 @@ def build_seed_list(args) -> Sequence[int]:
     return [base + i for i in range(args.num_seeds)]
 
 
+class TextStateCollector:
+    """Collect encoder_hidden_states inputs or outputs from transformer blocks."""
+
+    def __init__(self, blocks, capture: str = "input"):
+        if capture not in {"input", "output"}:
+            raise ValueError(f"Unsupported capture mode: {capture}")
+        self._handles = []
+        self.states = []
+        self.capture = capture
+
+        if capture == "input":
+            def _hook(_module, inputs, kwargs):
+                if kwargs and "encoder_hidden_states" in kwargs:
+                    self.states.append(kwargs["encoder_hidden_states"])
+                    return
+                if len(inputs) >= 2:
+                    self.states.append(inputs[1])
+                    return
+                raise RuntimeError("Transformer block inputs missing encoder_hidden_states.")
+
+            for block in blocks:
+                self._handles.append(block.register_forward_pre_hook(_hook, with_kwargs=True))
+        else:
+            def _hook(_module, _inputs, outputs):
+                if isinstance(outputs, (tuple, list)) and outputs:
+                    self.states.append(outputs[0])
+                else:
+                    raise RuntimeError("Unexpected transformer block output; cannot collect text states.")
+
+            for block in blocks:
+                self._handles.append(block.register_forward_hook(_hook))
+
+    def clear(self):
+        self.states = []
+
+    def remove(self):
+        for handle in self._handles:
+            handle.remove()
+        self._handles = []
+
+
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
@@ -236,6 +277,9 @@ def run(args: argparse.Namespace):
     if getattr(denoiser_base, "gradient_checkpointing", False):
         print("[INFO] Disabling gradient checkpointing to capture intermediate text gradients.")
         denoiser_base.gradient_checkpointing = False
+    if not hasattr(denoiser_base, "transformer_blocks"):
+        raise AttributeError("Denoiser base model missing transformer_blocks; cannot collect text states.")
+    text_state_collector = TextStateCollector(denoiser_base.transformer_blocks, capture="input")
 
     target_layers = sorted(set(args.layers))
     if not target_layers:
@@ -325,8 +369,8 @@ def run(args: argparse.Namespace):
             print("[WARN] Token mask has no valid tokens; disabling padding mask.")
             token_mask = None
 
-        prompt_emb = prompt_emb.to(dtype=denoiser.dtype).requires_grad_(True)
-        pooled_emb = pooled_emb.to(dtype=denoiser.dtype).requires_grad_(True)
+        prompt_emb = prompt_emb.to(dtype=denoiser.dtype).detach().requires_grad_(True)
+        pooled_emb = pooled_emb.to(dtype=denoiser.dtype).detach().requires_grad_(True)
 
         layer_sum_scores = {layer: None for layer in target_layers}
         effective_counts = {layer: 0 for layer in target_layers}
@@ -342,13 +386,14 @@ def run(args: argparse.Namespace):
                 z_t = z_t.to(dtype=denoiser.dtype)
 
                 with torch.enable_grad():
+                    text_state_collector.clear()
                     outputs = denoiser(
                         hidden_states=z_t,
                         timestep=t_tensor,
                         encoder_hidden_states=prompt_emb,
                         pooled_projections=pooled_emb,
                         return_dict=False,
-                        output_hidden_states=True,
+                        output_hidden_states=False,
                         force_txt_grad=args.force_txt_grad,
                     )
 
@@ -357,7 +402,7 @@ def run(args: argparse.Namespace):
                         print(f"[WARN] Non-finite denoiser output at timestep={timestep_idx}, seed={seed}.")
                     y = 0.5 * (pred.float() ** 2).sum()
 
-                    txt_hidden_states_list = outputs["txt_hidden_states"]
+                    txt_hidden_states_list = text_state_collector.states
                     max_layer = max(target_layers)
                     if max_layer >= len(txt_hidden_states_list):
                         raise ValueError(
@@ -365,15 +410,19 @@ def run(args: argparse.Namespace):
                         )
                     target_states = [txt_hidden_states_list[layer][0] for layer in target_layers]
 
-                    for state in target_states:
-                        state.retain_grad()
+                    grads = torch.autograd.grad(
+                        y,
+                        target_states,
+                        retain_graph=False,
+                        create_graph=False,
+                        allow_unused=True,
+                    )
 
-                    y.backward()
-                    grads = [state.grad for state in target_states]
-
-                for layer, grad in zip(target_layers, grads):
+                missing_layers = []
+                for layer, grad, state in zip(target_layers, grads, target_states):
                     if grad is None:
-                        continue
+                        missing_layers.append(layer)
+                        grad = torch.zeros_like(state)
                     scores = grad.float().norm(dim=-1)
                     if token_mask is not None:
                         scores = scores[token_mask]
@@ -384,6 +433,13 @@ def run(args: argparse.Namespace):
                     else:
                         layer_sum_scores[layer] += scores
                     effective_counts[layer] += 1
+
+                if missing_layers:
+                    missing_str = ", ".join(str(layer) for layer in missing_layers)
+                    print(
+                        "[WARN] No gradient for layers: "
+                        f"{missing_str}. Substituting zero grads; check model usage of text states."
+                    )
 
                 if prompt_emb.grad is not None:
                     prompt_emb.grad = None
@@ -409,6 +465,7 @@ def run(args: argparse.Namespace):
 
     if processed_pairs == 0:
         print("[WARN] No valid pairs processed.")
+        text_state_collector.remove()
         return
 
     print(f"[STATS] Processed {processed_pairs} pairs. Aggregation: {total_inner} samples/pair")
@@ -447,6 +504,7 @@ def run(args: argparse.Namespace):
     plot_curve(ys_strength, "Mean influence strength", args.output_strength)
     plot_curve(ys_topk, f"Top-{args.topk} mass", args.output_topk)
     plot_curve(ys_entropy, "Entropy", args.output_entropy)
+    text_state_collector.remove()
 
 
 # -----------------------------------------------------------------------------
