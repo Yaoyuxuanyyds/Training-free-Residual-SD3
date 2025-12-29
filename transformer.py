@@ -44,6 +44,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         origin: torch.Tensor,
         w: torch.Tensor,
         use_layernorm: bool = True,
+        stop_grad: bool = True,
     ):
         """
         target/origin: [B, L, D]
@@ -52,8 +53,12 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
         # ----------- STOP GRADIENT PART -----------
         # residual 的 2 个输入都不参与梯度
-        target_nograd = target.detach()
-        origin_nograd = origin.detach()
+        if stop_grad:
+            target_nograd = target.detach()
+            origin_nograd = origin.detach()
+        else:
+            target_nograd = target
+            origin_nograd = origin
 
         # --- standardize ---
         t_norm, t_mean, t_std = self._standardize_tokenwise(target_nograd)
@@ -91,6 +96,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         output_hidden_states: bool = False,
         output_text_inputs: bool = False,
         force_txt_grad: bool = False,
+        residual_stop_grad: bool = True,
 
         # --- residual 参数 ---
         residual_target_layers: Optional[List[int]] = None,
@@ -156,6 +162,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
                         origin,
                         w,
                         use_layernorm=residual_use_layernorm,
+                        stop_grad=residual_stop_grad,
                     )
 
             # ---------------- transformer compute ----------------

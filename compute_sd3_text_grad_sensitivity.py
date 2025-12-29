@@ -393,6 +393,7 @@ def run(args: argparse.Namespace):
                         output_hidden_states=False,
                         output_text_inputs=True,
                         force_txt_grad=args.force_txt_grad,
+                        residual_stop_grad=False,
                     )
 
                     pred = outputs["sample"]
