@@ -135,7 +135,8 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
         # ---------------- iterate transformer blocks ----------------
         for index_block, block in enumerate(self.base_model.transformer_blocks):
-            if output_text_inputs:
+            is_skip = skip_layers is not None and index_block in skip_layers
+            if output_text_inputs and not is_skip:
                 txt_input_states_list.append(encoder_hidden_states)
 
             if use_residual:
@@ -166,8 +167,6 @@ class SD3Transformer2DModel_Residual(nn.Module):
                     )
 
             # ---------------- transformer compute ----------------
-            is_skip = skip_layers is not None and index_block in skip_layers
-
             if torch.is_grad_enabled() and self.base_model.gradient_checkpointing and not is_skip:
                 def create_custom_forward(module, return_dict=None):
                     def custom_forward(*inputs):
