@@ -89,6 +89,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         return_dict: bool = True,
         skip_layers: Optional[List[int]] = None,
         output_hidden_states: bool = False,
+        output_text_inputs: bool = False,
         force_txt_grad: bool = False,
 
         # --- residual 参数 ---
@@ -110,6 +111,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
         img_hidden_states_list = []
         txt_hidden_states_list = []
+        txt_input_states_list = []
 
         # ---------------- residual config ----------------
         use_residual = (
@@ -127,6 +129,8 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
         # ---------------- iterate transformer blocks ----------------
         for index_block, block in enumerate(self.base_model.transformer_blocks):
+            if output_text_inputs:
+                txt_input_states_list.append(encoder_hidden_states)
 
             if use_residual:
                 pre_encoder_states.append(encoder_hidden_states)
@@ -201,6 +205,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
                 "sample": output,
                 "img_hidden_states": img_hidden_states_list,
                 "txt_hidden_states": txt_hidden_states_list,
+                "txt_input_states": txt_input_states_list,
                 "context_embedder_output": context_embedder_output,
             }
 
