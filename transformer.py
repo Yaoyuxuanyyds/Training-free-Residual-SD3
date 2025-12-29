@@ -103,7 +103,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
         temb = self.base_model.time_text_embed(timestep, pooled_projections)
         encoder_hidden_states = self.base_model.context_embedder(encoder_hidden_states)
-        if force_txt_grad:
+        if force_txt_grad and not encoder_hidden_states.requires_grad:
             encoder_hidden_states = encoder_hidden_states.detach().requires_grad_(True)
 
         context_embedder_output = encoder_hidden_states

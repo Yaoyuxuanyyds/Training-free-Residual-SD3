@@ -351,13 +351,11 @@ def run(args: argparse.Namespace):
                         )
                     target_states = [txt_hidden_states_list[layer][0] for layer in target_layers]
 
-                    grads = torch.autograd.grad(
-                        y,
-                        target_states,
-                        retain_graph=False,
-                        create_graph=False,
-                        allow_unused=True,
-                    )
+                    for state in target_states:
+                        state.retain_grad()
+
+                    y.backward()
+                    grads = [state.grad for state in target_states]
 
                 for layer, grad in zip(target_layers, grads):
                     if grad is None:
@@ -372,6 +370,11 @@ def run(args: argparse.Namespace):
                     else:
                         layer_sum_scores[layer] += scores
                     effective_counts[layer] += 1
+
+                if prompt_emb.grad is not None:
+                    prompt_emb.grad = None
+                if pooled_emb.grad is not None:
+                    pooled_emb.grad = None
 
         for layer in target_layers:
             if layer_sum_scores[layer] is None or effective_counts[layer] == 0:
