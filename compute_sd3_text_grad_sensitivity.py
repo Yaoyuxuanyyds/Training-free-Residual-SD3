@@ -185,20 +185,32 @@ def build_seed_list(args) -> Sequence[int]:
 
 
 class TextStateCollector:
-    """Collect encoder_hidden_states outputs from each transformer block."""
+    """Collect encoder_hidden_states inputs or outputs from transformer blocks."""
 
-    def __init__(self, blocks):
+    def __init__(self, blocks, capture: str = "input"):
+        if capture not in {"input", "output"}:
+            raise ValueError(f"Unsupported capture mode: {capture}")
         self._handles = []
         self.states = []
+        self.capture = capture
 
-        def _hook(_module, _inputs, outputs):
-            if isinstance(outputs, (tuple, list)) and outputs:
-                self.states.append(outputs[0])
-            else:
-                raise RuntimeError("Unexpected transformer block output; cannot collect text states.")
+        if capture == "input":
+            def _hook(_module, inputs):
+                if len(inputs) < 2:
+                    raise RuntimeError("Transformer block inputs missing encoder_hidden_states.")
+                self.states.append(inputs[1])
 
-        for block in blocks:
-            self._handles.append(block.register_forward_hook(_hook))
+            for block in blocks:
+                self._handles.append(block.register_forward_pre_hook(_hook))
+        else:
+            def _hook(_module, _inputs, outputs):
+                if isinstance(outputs, (tuple, list)) and outputs:
+                    self.states.append(outputs[0])
+                else:
+                    raise RuntimeError("Unexpected transformer block output; cannot collect text states.")
+
+            for block in blocks:
+                self._handles.append(block.register_forward_hook(_hook))
 
     def clear(self):
         self.states = []
@@ -263,7 +275,7 @@ def run(args: argparse.Namespace):
         denoiser_base.gradient_checkpointing = False
     if not hasattr(denoiser_base, "transformer_blocks"):
         raise AttributeError("Denoiser base model missing transformer_blocks; cannot collect text states.")
-    text_state_collector = TextStateCollector(denoiser_base.transformer_blocks)
+    text_state_collector = TextStateCollector(denoiser_base.transformer_blocks, capture="input")
 
     target_layers = sorted(set(args.layers))
     if not target_layers:
