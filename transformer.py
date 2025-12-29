@@ -89,6 +89,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         return_dict: bool = True,
         skip_layers: Optional[List[int]] = None,
         output_hidden_states: bool = False,
+        force_txt_grad: bool = False,
 
         # --- residual 参数 ---
         residual_target_layers: Optional[List[int]] = None,
@@ -102,6 +103,8 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
         temb = self.base_model.time_text_embed(timestep, pooled_projections)
         encoder_hidden_states = self.base_model.context_embedder(encoder_hidden_states)
+        if force_txt_grad:
+            encoder_hidden_states = encoder_hidden_states.detach().requires_grad_(True)
 
         context_embedder_output = encoder_hidden_states
 

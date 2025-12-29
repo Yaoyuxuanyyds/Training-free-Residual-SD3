@@ -335,6 +335,7 @@ def run(args: argparse.Namespace):
                         pooled_projections=pooled_emb,
                         return_dict=False,
                         output_hidden_states=True,
+                        force_txt_grad=args.force_txt_grad,
                     )
 
                     pred = outputs["sample"]
@@ -468,6 +469,18 @@ def parse_args():
     p.add_argument("--output-topk", type=str, default="grad_topk_mass_curve.png")
     p.add_argument("--output-entropy", type=str, default="grad_entropy_curve.png")
     p.add_argument("--ignore-padding", action="store_true", help="Use attention mask to skip padded tokens")
+    p.add_argument(
+        "--force-txt-grad",
+        action="store_true",
+        default=True,
+        help="Force text hidden states to require grad (default: enabled).",
+    )
+    p.add_argument(
+        "--no-force-txt-grad",
+        action="store_false",
+        dest="force_txt_grad",
+        help="Disable forcing text hidden states to require grad.",
+    )
     p.add_argument("--dataset", type=str, nargs="+", default=None, help="Dataset names to evaluate (e.g., coco)")
     p.add_argument("--datadir", type=str, default=None, help="Root directory containing datasets")
     p.add_argument("--num-samples", type=int, default=-1, help="Number of pairs to evaluate from the dataset (-1 for all)")
