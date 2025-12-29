@@ -44,6 +44,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         origin: torch.Tensor,
         w: torch.Tensor,
         use_layernorm: bool = True,
+        stop_grad: bool = True,
     ):
         """
         target/origin: [B, L, D]
@@ -52,8 +53,12 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
         # ----------- STOP GRADIENT PART -----------
         # residual 的 2 个输入都不参与梯度
-        target_nograd = target.detach()
-        origin_nograd = origin.detach()
+        if stop_grad:
+            target_nograd = target.detach()
+            origin_nograd = origin.detach()
+        else:
+            target_nograd = target
+            origin_nograd = origin
 
         # --- standardize ---
         t_norm, t_mean, t_std = self._standardize_tokenwise(target_nograd)
@@ -89,7 +94,9 @@ class SD3Transformer2DModel_Residual(nn.Module):
         return_dict: bool = True,
         skip_layers: Optional[List[int]] = None,
         output_hidden_states: bool = False,
+        output_text_inputs: bool = False,
         force_txt_grad: bool = False,
+        residual_stop_grad: bool = True,
 
         # --- residual 参数 ---
         residual_target_layers: Optional[List[int]] = None,
@@ -110,6 +117,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
         img_hidden_states_list = []
         txt_hidden_states_list = []
+        txt_input_states_list = []
 
         # ---------------- residual config ----------------
         use_residual = (
@@ -127,6 +135,8 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
         # ---------------- iterate transformer blocks ----------------
         for index_block, block in enumerate(self.base_model.transformer_blocks):
+            if output_text_inputs:
+                txt_input_states_list.append(encoder_hidden_states)
 
             if use_residual:
                 pre_encoder_states.append(encoder_hidden_states)
@@ -152,6 +162,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
                         origin,
                         w,
                         use_layernorm=residual_use_layernorm,
+                        stop_grad=residual_stop_grad,
                     )
 
             # ---------------- transformer compute ----------------
@@ -201,6 +212,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
                 "sample": output,
                 "img_hidden_states": img_hidden_states_list,
                 "txt_hidden_states": txt_hidden_states_list,
+                "txt_input_states": txt_input_states_list,
                 "context_embedder_output": context_embedder_output,
             }
 
