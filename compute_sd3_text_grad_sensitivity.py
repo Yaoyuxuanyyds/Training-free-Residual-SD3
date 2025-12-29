@@ -279,8 +279,6 @@ def run(args: argparse.Namespace):
         denoiser_base.gradient_checkpointing = False
     if not hasattr(denoiser_base, "transformer_blocks"):
         raise AttributeError("Denoiser base model missing transformer_blocks; cannot collect text states.")
-    text_state_collector = TextStateCollector(denoiser_base.transformer_blocks, capture="input")
-
     target_layers = sorted(set(args.layers))
     if not target_layers:
         raise ValueError("No transformer layers specified for evaluation.")
@@ -385,16 +383,19 @@ def run(args: argparse.Namespace):
                 )
                 z_t = z_t.to(dtype=denoiser.dtype)
 
-                with torch.enable_grad():
-                    text_state_collector.clear()
+                def _run_and_collect(force_text_dependency: bool):
                     outputs = denoiser(
                         hidden_states=z_t,
                         timestep=t_tensor,
                         encoder_hidden_states=prompt_emb,
                         pooled_projections=pooled_emb,
                         return_dict=False,
-                        output_hidden_states=False,
+                        output_hidden_states=True,
+                        output_text_inputs=False,
                         force_txt_grad=args.force_txt_grad,
+                        residual_stop_grad=False,
+                        force_text_dependency=force_text_dependency,
+                        force_text_dependency_scale=args.force_text_dependency_scale,
                     )
 
                     pred = outputs["sample"]
@@ -402,27 +403,46 @@ def run(args: argparse.Namespace):
                         print(f"[WARN] Non-finite denoiser output at timestep={timestep_idx}, seed={seed}.")
                     y = 0.5 * (pred.float() ** 2).sum()
 
-                    txt_hidden_states_list = text_state_collector.states
+                    txt_hidden_states_list = outputs.get("txt_hidden_states")
+                    if txt_hidden_states_list is None:
+                        raise KeyError(
+                            "Missing txt_hidden_states in denoiser outputs; "
+                            "ensure output_hidden_states=True in the denoiser forward."
+                        )
                     max_layer = max(target_layers)
                     if max_layer >= len(txt_hidden_states_list):
                         raise ValueError(
                             f"Requested layer {max_layer} but only {len(txt_hidden_states_list)} layers were recorded."
                         )
                     target_states = [txt_hidden_states_list[layer][0] for layer in target_layers]
-
+                    for layer, state in zip(target_layers, target_states):
+                        if not state.requires_grad:
+                            raise RuntimeError(
+                                f"Text hidden state at layer {layer} does not require grad. "
+                                "Ensure force_txt_grad=True and run the denoiser under torch.enable_grad()."
+                            )
                     grads = torch.autograd.grad(
                         y,
                         target_states,
                         retain_graph=False,
                         create_graph=False,
-                        allow_unused=True,
+                        allow_unused=False,
                     )
+                    return grads, target_states
 
-                missing_layers = []
+                with torch.enable_grad():
+                    try:
+                        grads, target_states = _run_and_collect(force_text_dependency=args.force_text_dependency)
+                    except RuntimeError as exc:
+                        if "not have been used in the graph" not in str(exc):
+                            raise
+                        print(
+                            "[WARN] Text states not connected to the output graph. "
+                            "Retrying with force_text_dependency=True."
+                        )
+                        grads, target_states = _run_and_collect(force_text_dependency=True)
+
                 for layer, grad, state in zip(target_layers, grads, target_states):
-                    if grad is None:
-                        missing_layers.append(layer)
-                        grad = torch.zeros_like(state)
                     scores = grad.float().norm(dim=-1)
                     if token_mask is not None:
                         scores = scores[token_mask]
@@ -433,13 +453,6 @@ def run(args: argparse.Namespace):
                     else:
                         layer_sum_scores[layer] += scores
                     effective_counts[layer] += 1
-
-                if missing_layers:
-                    missing_str = ", ".join(str(layer) for layer in missing_layers)
-                    print(
-                        "[WARN] No gradient for layers: "
-                        f"{missing_str}. Substituting zero grads; check model usage of text states."
-                    )
 
                 if prompt_emb.grad is not None:
                     prompt_emb.grad = None
@@ -465,7 +478,6 @@ def run(args: argparse.Namespace):
 
     if processed_pairs == 0:
         print("[WARN] No valid pairs processed.")
-        text_state_collector.remove()
         return
 
     print(f"[STATS] Processed {processed_pairs} pairs. Aggregation: {total_inner} samples/pair")
@@ -504,7 +516,6 @@ def run(args: argparse.Namespace):
     plot_curve(ys_strength, "Mean influence strength", args.output_strength)
     plot_curve(ys_topk, f"Top-{args.topk} mass", args.output_topk)
     plot_curve(ys_entropy, "Entropy", args.output_entropy)
-    text_state_collector.remove()
 
 
 # -----------------------------------------------------------------------------
@@ -555,6 +566,18 @@ def parse_args():
         action="store_false",
         dest="force_txt_grad",
         help="Disable forcing text hidden states to require grad.",
+    )
+    p.add_argument(
+        "--force-text-dependency",
+        action="store_true",
+        default=False,
+        help="Force a direct dependency on text states to avoid unused-graph gradients.",
+    )
+    p.add_argument(
+        "--force-text-dependency-scale",
+        type=float,
+        default=1.0,
+        help="Scale for the forced text dependency injection.",
     )
     p.add_argument("--dataset", type=str, nargs="+", default=None, help="Dataset names to evaluate (e.g., coco)")
     p.add_argument("--datadir", type=str, default=None, help="Root directory containing datasets")
