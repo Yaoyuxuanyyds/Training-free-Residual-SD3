@@ -738,78 +738,78 @@ def visualize_timestep(
                 head_labels,
             )
     
-    # ------------------------------
-    # 5) Joint attention 可视化（原始值版本）
-    # ------------------------------
-    for lid in layer_ids:
-        rec = store.get(lid)
-        if rec is None:
-            continue
+    # # ------------------------------
+    # # 5) Joint attention 可视化（原始值版本）
+    # # ------------------------------
+    # for lid in layer_ids:
+    #     rec = store.get(lid)
+    #     if rec is None:
+    #         continue
 
-        joint_attn = rec.joint_attn[0].cpu().numpy()  # [N, N]
+    #     joint_attn = rec.joint_attn[0].cpu().numpy()  # [N, N]
 
-        N_I = rec.image_token_count
-        N_clip = token_offset
-        N_t5 = len(valid_token_idxs)
-        N = joint_attn.shape[0]
+    #     N_I = rec.image_token_count
+    #     N_clip = token_offset
+    #     N_t5 = len(valid_token_idxs)
+    #     N = joint_attn.shape[0]
 
-        # ===== (a) 完整 N x N joint attention =====
-        full_path = os.path.join(step_dir, f"joint_attn_full_layer-{lid}.png")
-        draw_joint_attention_with_shading(
-            joint_attn=joint_attn,
-            image_token_count=N_I,
-            clip_token_count=N_clip,
-            t5_token_count=N_t5,
-            title=f"Joint Attention (Layer {lid})",
-            save_path=full_path,
-            cmap="Reds",
-        )
-        print(f"[SAVE] {full_path}")
+    #     # ===== (a) 完整 N x N joint attention =====
+    #     full_path = os.path.join(step_dir, f"joint_attn_full_layer-{lid}.png")
+    #     draw_joint_attention_with_shading(
+    #         joint_attn=joint_attn,
+    #         image_token_count=N_I,
+    #         clip_token_count=N_clip,
+    #         t5_token_count=N_t5,
+    #         title=f"Joint Attention (Layer {lid})",
+    #         save_path=full_path,
+    #         cmap="Reds",
+    #     )
+    #     print(f"[SAVE] {full_path}")
 
-        # ===== (b) N_img x N_txt : Image queries → Text tokens =====
-        sub_path = os.path.join(step_dir, f"joint_attn_img_to_text_layer-{lid}.png")
-        draw_img_to_text_joint_attention(
-            joint_attn=joint_attn,
-            image_token_count=N_I,
-            clip_token_count=N_clip,
-            t5_token_count=N_t5,
-            save_path=sub_path,
-            cmap="Reds",
-        )
-        print(f"[SAVE] {sub_path}")
+    #     # ===== (b) N_img x N_txt : Image queries → Text tokens =====
+    #     sub_path = os.path.join(step_dir, f"joint_attn_img_to_text_layer-{lid}.png")
+    #     draw_img_to_text_joint_attention(
+    #         joint_attn=joint_attn,
+    #         image_token_count=N_I,
+    #         clip_token_count=N_clip,
+    #         t5_token_count=N_t5,
+    #         save_path=sub_path,
+    #         cmap="Reds",
+    #     )
+    #     print(f"[SAVE] {sub_path}")
 
 
-    # ------------------------------
-    # 5.5) 指定 layer 的 per-head joint attention
-    # ------------------------------
-    if per_head_layers:
-        for per_head_layer in per_head_layers:
-            rec = store.get(per_head_layer)
-            if rec is None or rec.joint_attn_heads is None:
-                continue
+    # # ------------------------------
+    # # 5.5) 指定 layer 的 per-head joint attention
+    # # ------------------------------
+    # if per_head_layers:
+    #     for per_head_layer in per_head_layers:
+    #         rec = store.get(per_head_layer)
+    #         if rec is None or rec.joint_attn_heads is None:
+    #             continue
 
-            per_head_dir = os.path.join(step_dir, f"per_head_layer-{per_head_layer}")
-            os.makedirs(per_head_dir, exist_ok=True)
+    #         per_head_dir = os.path.join(step_dir, f"per_head_layer-{per_head_layer}")
+    #         os.makedirs(per_head_dir, exist_ok=True)
 
-            N_I = rec.image_token_count
-            N_clip = token_offset
-            N_t5 = len(valid_token_idxs)
+    #         N_I = rec.image_token_count
+    #         N_clip = token_offset
+    #         N_t5 = len(valid_token_idxs)
 
-            for h in range(rec.joint_attn_heads.shape[0]):
-                joint_attn = rec.joint_attn_heads[h].cpu().numpy()
-                full_path = os.path.join(
-                    per_head_dir, f"joint_attn_full_layer-{per_head_layer}_head-{h}.png"
-                )
-                draw_joint_attention_with_shading(
-                    joint_attn=joint_attn,
-                    image_token_count=N_I,
-                    clip_token_count=N_clip,
-                    t5_token_count=N_t5,
-                    title=f"Joint Attention (Layer {per_head_layer}, Head {h})",
-                    save_path=full_path,
-                    cmap="Reds",
-                )
-                print(f"[SAVE] {full_path}")
+    #         for h in range(rec.joint_attn_heads.shape[0]):
+    #             joint_attn = rec.joint_attn_heads[h].cpu().numpy()
+    #             full_path = os.path.join(
+    #                 per_head_dir, f"joint_attn_full_layer-{per_head_layer}_head-{h}.png"
+    #             )
+    #             draw_joint_attention_with_shading(
+    #                 joint_attn=joint_attn,
+    #                 image_token_count=N_I,
+    #                 clip_token_count=N_clip,
+    #                 t5_token_count=N_t5,
+    #                 title=f"Joint Attention (Layer {per_head_layer}, Head {h})",
+    #                 save_path=full_path,
+    #                 cmap="Reds",
+    #             )
+    #             print(f"[SAVE] {full_path}")
 
 
     # =====================================================================
