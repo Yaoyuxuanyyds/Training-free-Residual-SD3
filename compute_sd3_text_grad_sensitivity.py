@@ -195,13 +195,17 @@ class TextStateCollector:
         self.capture = capture
 
         if capture == "input":
-            def _hook(_module, inputs):
-                if len(inputs) < 2:
-                    raise RuntimeError("Transformer block inputs missing encoder_hidden_states.")
-                self.states.append(inputs[1])
+            def _hook(_module, inputs, kwargs):
+                if kwargs and "encoder_hidden_states" in kwargs:
+                    self.states.append(kwargs["encoder_hidden_states"])
+                    return
+                if len(inputs) >= 2:
+                    self.states.append(inputs[1])
+                    return
+                raise RuntimeError("Transformer block inputs missing encoder_hidden_states.")
 
             for block in blocks:
-                self._handles.append(block.register_forward_pre_hook(_hook))
+                self._handles.append(block.register_forward_pre_hook(_hook, with_kwargs=True))
         else:
             def _hook(_module, _inputs, outputs):
                 if isinstance(outputs, (tuple, list)) and outputs:
