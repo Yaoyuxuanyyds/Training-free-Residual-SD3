@@ -142,13 +142,18 @@ def _maybe_apply_lora(
 # Metric helpers
 # -----------------------------------------------------------------------------
 
-def compute_metrics(scores: torch.Tensor, topk: int):
+def compute_metrics(scores: torch.Tensor, topk: int, warn_prefix: str = ""):
     scores = scores.float()
     if scores.numel() == 0:
-        return float("nan"), float("nan"), float("nan")
+        if warn_prefix:
+            print(f"[WARN] {warn_prefix} empty score tensor; returning zeros.")
+        return 0.0, 0.0, 0.0
+    scores = torch.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
     total = scores.sum()
-    if total <= 0:
-        return float("nan"), float("nan"), float("nan")
+    if not torch.isfinite(total) or total <= 0:
+        if warn_prefix:
+            print(f"[WARN] {warn_prefix} non-positive or non-finite score sum; returning zeros.")
+        return 0.0, 0.0, 0.0
     mean_strength = scores.mean().item()
     k = max(1, min(topk, scores.numel()))
     topk_mass = scores.topk(k).values.sum().div(total).item()
@@ -188,7 +193,17 @@ def run(args: argparse.Namespace):
             torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device(args.device)
-    dtype = torch.float16 if device.type == "cuda" else torch.float32
+    precision = args.precision.lower()
+    if precision == "auto":
+        dtype = torch.float16 if device.type == "cuda" else torch.float32
+    elif precision == "fp16":
+        dtype = torch.float16
+    elif precision == "bf16":
+        dtype = torch.bfloat16
+    elif precision == "fp32":
+        dtype = torch.float32
+    else:
+        raise ValueError(f"Unsupported precision: {args.precision}")
 
     base = StableDiffusion3Base(
         model_key=args.model,
@@ -292,6 +307,9 @@ def run(args: argparse.Namespace):
         token_mask = token_mask[0].to(torch.bool)
         if not args.ignore_padding:
             token_mask = None
+        elif token_mask.sum() == 0:
+            print("[WARN] Token mask has no valid tokens; disabling padding mask.")
+            token_mask = None
 
         prompt_emb = prompt_emb.to(dtype=denoiser.dtype).requires_grad_(True)
         pooled_emb = pooled_emb.to(dtype=denoiser.dtype).requires_grad_(True)
@@ -317,9 +335,12 @@ def run(args: argparse.Namespace):
                         pooled_projections=pooled_emb,
                         return_dict=False,
                         output_hidden_states=True,
+                        force_txt_grad=args.force_txt_grad,
                     )
 
                     pred = outputs["sample"]
+                    if not torch.isfinite(pred).all():
+                        print(f"[WARN] Non-finite denoiser output at timestep={timestep_idx}, seed={seed}.")
                     y = 0.5 * (pred.float() ** 2).sum()
 
                     txt_hidden_states_list = outputs["txt_hidden_states"]
@@ -356,7 +377,9 @@ def run(args: argparse.Namespace):
             if layer_sum_scores[layer] is None or effective_counts[layer] == 0:
                 continue
             avg_scores = layer_sum_scores[layer] / float(effective_counts[layer])
-            mean_strength, topk_mass, entropy = compute_metrics(avg_scores, args.topk)
+            mean_strength, topk_mass, entropy = compute_metrics(
+                avg_scores, args.topk, warn_prefix=f"Layer {layer:02d}"
+            )
             layer_strength_records[layer].append(mean_strength)
             layer_topk_records[layer].append(topk_mass)
             layer_entropy_records[layer].append(entropy)
@@ -427,6 +450,13 @@ def parse_args():
     p.add_argument("--height", type=int, default=1024)
     p.add_argument("--width", type=int, default=1024)
     p.add_argument("--device", type=str, default="cuda")
+    p.add_argument(
+        "--precision",
+        type=str,
+        default="fp32",
+        choices=["auto", "fp16", "bf16", "fp32"],
+        help="Computation precision for denoiser and embeddings.",
+    )
     p.add_argument("--load-ckpt", dest="load_ckpt", type=str, default=None)
     p.add_argument("--lora-ckpt", dest="lora_ckpt", type=str, default=None)
     p.add_argument("--lora-rank", dest="lora_rank", type=int, default=8)
@@ -439,6 +469,18 @@ def parse_args():
     p.add_argument("--output-topk", type=str, default="grad_topk_mass_curve.png")
     p.add_argument("--output-entropy", type=str, default="grad_entropy_curve.png")
     p.add_argument("--ignore-padding", action="store_true", help="Use attention mask to skip padded tokens")
+    p.add_argument(
+        "--force-txt-grad",
+        action="store_true",
+        default=True,
+        help="Force text hidden states to require grad (default: enabled).",
+    )
+    p.add_argument(
+        "--no-force-txt-grad",
+        action="store_false",
+        dest="force_txt_grad",
+        help="Disable forcing text hidden states to require grad.",
+    )
     p.add_argument("--dataset", type=str, nargs="+", default=None, help="Dataset names to evaluate (e.g., coco)")
     p.add_argument("--datadir", type=str, default=None, help="Root directory containing datasets")
     p.add_argument("--num-samples", type=int, default=-1, help="Number of pairs to evaluate from the dataset (-1 for all)")
