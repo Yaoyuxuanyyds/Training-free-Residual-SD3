@@ -399,12 +399,14 @@ def run(args: argparse.Namespace):
                         target_states,
                         retain_graph=False,
                         create_graph=False,
-                        allow_unused=False,
+                        allow_unused=True,
                     )
 
-                for layer, grad in zip(target_layers, grads):
+                missing_layers = []
+                for layer, grad, state in zip(target_layers, grads, target_states):
                     if grad is None:
-                        continue
+                        missing_layers.append(layer)
+                        grad = torch.zeros_like(state)
                     scores = grad.float().norm(dim=-1)
                     if token_mask is not None:
                         scores = scores[token_mask]
@@ -415,6 +417,13 @@ def run(args: argparse.Namespace):
                     else:
                         layer_sum_scores[layer] += scores
                     effective_counts[layer] += 1
+
+                if missing_layers:
+                    missing_str = ", ".join(str(layer) for layer in missing_layers)
+                    print(
+                        "[WARN] No gradient for layers: "
+                        f"{missing_str}. Substituting zero grads; check model usage of text states."
+                    )
 
                 if prompt_emb.grad is not None:
                     prompt_emb.grad = None
