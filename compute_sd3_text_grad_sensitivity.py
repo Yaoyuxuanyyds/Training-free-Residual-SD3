@@ -26,7 +26,7 @@ from sampler import StableDiffusion3Base
 from lora_utils import inject_lora, load_lora_state_dict
 from dataset.datasets import get_target_dataset
 from torch.utils.data import ConcatDataset, Subset
-
+from tqdm import tqdm
 
 # -----------------------------------------------------------------------------
 # Image helpers
@@ -347,7 +347,11 @@ def run(args: argparse.Namespace):
 
     processed_pairs = 0
 
-    for pair_idx, image_data, prompt_value in iterate_pairs():
+    pair_iter = iterate_pairs()
+    if dataset_mode:
+        pair_iter = tqdm(pair_iter, total=total_pairs, desc="Processing pairs")
+
+    for pair_idx, image_data, prompt_value in pair_iter:
         prompt = normalize_prompt(prompt_value)
         prompt_preview = prompt if len(prompt) <= 60 else prompt[:57] + "..."
         gt_pil = load_and_resize_pil(image_data, args.height, args.width)
@@ -412,7 +416,8 @@ def run(args: argparse.Namespace):
                         raise ValueError(
                             f"Requested layer {max_layer} but only {len(txt_hidden_states_list)} layers were recorded."
                         )
-                    target_states = [txt_hidden_states_list[layer][0] for layer in target_layers]
+                    # target_states = [txt_hidden_states_list[layer][0] for layer in target_layers]
+                    target_states = [txt_hidden_states_list[layer] for layer in target_layers]
                     for layer, state in zip(target_layers, target_states):
                         if not state.requires_grad:
                             raise RuntimeError(
@@ -420,16 +425,19 @@ def run(args: argparse.Namespace):
                                 "Ensure force_txt_grad=True and run the denoiser under torch.enable_grad()."
                             )
 
-                    grads = torch.autograd.grad(
-                        y,
-                        target_states,
-                        retain_graph=False,
-                        create_graph=False,
-                        allow_unused=False,
-                    )
+                    y.backward()
+
+                    # 从 retain_grad() 的 tensor 上取梯度
+                    grads = []
+                    for state in target_states:
+                        if state.grad is None:
+                            raise RuntimeError("state.grad is None — text branch may not affect pred.")
+                        grads.append(state.grad)
 
                 for layer, grad, state in zip(target_layers, grads, target_states):
-                    scores = grad.float().norm(dim=-1)
+                    # scores = grad.float().norm(dim=-1)
+                    grad0 = grad[0]                      # (T, D)
+                    scores = grad0.float().norm(dim=-1)  # (T,) 
                     if token_mask is not None:
                         scores = scores[token_mask]
                     scores = scores.detach().cpu()
@@ -489,16 +497,20 @@ def run(args: argparse.Namespace):
 
     def plot_curve(values, ylabel, filename):
         plt.figure(figsize=(10, 5))
-        plt.plot(xs, values, marker="o")
+        plt.plot(xs, values, marker="o", linewidth=2)
         plt.xlabel("Layer index")
         plt.ylabel(ylabel)
+
+        plt.xticks(xs)
+        plt.xlim(min(xs) - 0.5, max(xs) + 0.5)
+
         plt.grid(True, linestyle="--", alpha=0.3)
         plt.tight_layout()
+
         out_path = os.path.join(args.output_dir, filename)
         plt.savefig(out_path, dpi=200)
         plt.close()
-        print(f"[SAVE] {ylabel} curve saved to {out_path}")
-
+        
     plot_curve(ys_strength, "Mean influence strength", args.output_strength)
     plot_curve(ys_topk, f"Top-{args.topk} mass", args.output_topk)
     plot_curve(ys_entropy, "Entropy", args.output_entropy)

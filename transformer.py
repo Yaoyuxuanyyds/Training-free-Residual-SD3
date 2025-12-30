@@ -188,6 +188,8 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
             if output_hidden_states:
                 img_hidden_states_list.append(hidden_states)
+                if encoder_hidden_states is not None:
+                        encoder_hidden_states.retain_grad()
                 txt_hidden_states_list.append(encoder_hidden_states)
 
         # -------------- output unchanged --------------
