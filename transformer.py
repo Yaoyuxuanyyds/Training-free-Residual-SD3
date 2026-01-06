@@ -45,6 +45,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         w: torch.Tensor,
         use_layernorm: bool = True,
         stop_grad: bool = True,
+        rotation_matrix: Optional[torch.Tensor] = None,
     ):
         """
         target/origin: [B, L, D]
@@ -63,6 +64,8 @@ class SD3Transformer2DModel_Residual(nn.Module):
         # --- standardize ---
         t_norm, t_mean, t_std = self._standardize_tokenwise(target_nograd)
         o_norm, _, _ = self._standardize_tokenwise(origin_nograd)
+        if rotation_matrix is not None:
+            o_norm = torch.matmul(o_norm, rotation_matrix)
 
         # --- residual rule ---
         if w >= 0:
@@ -103,6 +106,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         residual_origin_layer: Optional[int] = None,
         residual_weights: Optional[Union[List[float], torch.Tensor]] = None,
         residual_use_layernorm: bool = True,         # ⭐ 新增
+        residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
     ) -> Union[torch.FloatTensor, Transformer2DModelOutput]:
 
         height, width = hidden_states.shape[-2:]
@@ -131,6 +135,39 @@ class SD3Transformer2DModel_Residual(nn.Module):
                 residual_weights = torch.tensor(residual_weights, dtype=encoder_hidden_states.dtype)
             residual_weights = residual_weights.to(encoder_hidden_states.device)
 
+            residual_rotations = None
+            if residual_rotation_matrices is not None:
+                if isinstance(residual_rotation_matrices, (list, tuple)):
+                    if all(torch.is_tensor(r) for r in residual_rotation_matrices):
+                        residual_rotations = torch.stack(residual_rotation_matrices, dim=0)
+                    else:
+                        residual_rotations = torch.tensor(residual_rotation_matrices)
+                elif torch.is_tensor(residual_rotation_matrices):
+                    residual_rotations = residual_rotation_matrices
+                else:
+                    raise TypeError(
+                        "residual_rotation_matrices must be a Tensor or a list/tuple of Tensors."
+                    )
+                if residual_rotations.dim() == 2:
+                    residual_rotations = residual_rotations.unsqueeze(0)
+                if residual_rotations.dim() != 3:
+                    raise ValueError(
+                        "residual_rotation_matrices must have shape (N, D, D) or (D, D)."
+                    )
+                residual_rotations = residual_rotations.to(
+                    device=encoder_hidden_states.device,
+                    dtype=encoder_hidden_states.dtype,
+                )
+                if residual_rotations.shape[0] != len(residual_target_layers):
+                    raise ValueError(
+                        "residual_rotation_matrices length must match residual_target_layers."
+                    )
+                if residual_rotations.shape[-1] != encoder_hidden_states.shape[-1] or \
+                    residual_rotations.shape[-2] != encoder_hidden_states.shape[-1]:
+                    raise ValueError(
+                        "residual_rotation_matrices feature dimension must match encoder_hidden_states."
+                    )
+
             pre_encoder_states = []
 
         # ---------------- iterate transformer blocks ----------------
@@ -158,12 +195,14 @@ class SD3Transformer2DModel_Residual(nn.Module):
                         )
 
                     # --------- 改进版 residual 应用 ---------
+                    rotation = residual_rotations[tid] if residual_rotations is not None else None
                     encoder_hidden_states = self._apply_residual(
                         encoder_hidden_states,
                         origin,
                         w,
                         use_layernorm=residual_use_layernorm,
                         stop_grad=residual_stop_grad,
+                        rotation_matrix=rotation,
                     )
 
             # ---------------- transformer compute ----------------
