@@ -11,6 +11,7 @@ import torch.nn as nn
 import tqdm
 
 from sampler import SD3Euler, build_timestep_residual_weight_fn
+from util import load_residual_procrustes
 from dataset.datasets import get_target_dataset
 import json
 from lora_utils import *
@@ -88,6 +89,7 @@ if __name__ == '__main__':
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
+    parser.add_argument("--residual_procrustes_path", type=str, default=None)
     parser.add_argument(
         "--timestep_residual_weight_fn",
         type=str,
@@ -140,6 +142,21 @@ if __name__ == '__main__':
         sampler.denoiser.eval()
         print("[LoRA] loaded and ready.")
 
+
+    residual_rotation_matrices = None
+    if args.residual_procrustes_path is not None:
+        residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
+            args.residual_procrustes_path
+        )
+        if args.residual_target_layers is None and target_layers is not None:
+            args.residual_target_layers = list(target_layers)
+        elif target_layers is not None and args.residual_target_layers is not None:
+            if list(target_layers) != list(args.residual_target_layers):
+                raise ValueError(
+                    "residual_target_layers does not match target_layers in the Procrustes file."
+                )
+        if args.residual_origin_layer is None and isinstance(meta, dict):
+            args.residual_origin_layer = meta.get("origin_layer")
 
     # sample set
     if args.dataset is not None:
@@ -202,6 +219,7 @@ if __name__ == '__main__':
                         residual_target_layers=args.residual_target_layers,
                         residual_origin_layer=args.residual_origin_layer,
                         residual_weights=args.residual_weights,
+                        residual_rotation_matrices=residual_rotation_matrices,
                         residual_timestep_weight_fn=build_timestep_residual_weight_fn(
                             args.timestep_residual_weight_fn,
                             power=args.timestep_residual_weight_power,
@@ -251,6 +269,7 @@ if __name__ == '__main__':
                                         residual_target_layers=args.residual_target_layers,
                                         residual_origin_layer=args.residual_origin_layer,
                                         residual_weights=args.residual_weights,
+                                        residual_rotation_matrices=residual_rotation_matrices,
                                         residual_timestep_weight_fn=build_timestep_residual_weight_fn(
                                             args.timestep_residual_weight_fn,
                                             power=args.timestep_residual_weight_power,

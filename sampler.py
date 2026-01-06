@@ -252,6 +252,7 @@ class StableDiffusion3Base():
         residual_origin_layer: Optional[int] = None,
         residual_weights: Optional[List[float]] = None,
         residual_use_layernorm: bool = True,    # ⭐ 新增
+        residual_rotation_matrices: Optional[torch.Tensor] = None,
     ):
         with autocast('cuda', enabled=(self.dtype == torch.float16 and torch.cuda.is_available())):
             v = self.denoiser(
@@ -264,6 +265,7 @@ class StableDiffusion3Base():
                 residual_origin_layer=residual_origin_layer,
                 residual_weights=residual_weights,
                 residual_use_layernorm=residual_use_layernorm,   # ⭐ Forward 参数传递
+                residual_rotation_matrices=residual_rotation_matrices,
             )['sample']
         return v
 
@@ -372,6 +374,7 @@ class SD3Euler(StableDiffusion3Base):
         residual_origin_layer: Optional[int] = None,
         residual_weights: Optional[List[float]] = None,
         residual_use_layernorm: bool = True,  # ⭐ 新增
+        residual_rotation_matrices: Optional[torch.Tensor] = None,
         residual_timestep_weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]] = None,
     ):
         imgH, imgW = img_shape if img_shape is not None else (1024, 1024)
@@ -408,6 +411,7 @@ class SD3Euler(StableDiffusion3Base):
                 residual_origin_layer=residual_origin_layer,
                 residual_weights=effective_residual_weights,
                 residual_use_layernorm=residual_use_layernorm,  # ⭐ 传递
+                residual_rotation_matrices=residual_rotation_matrices,
             )
 
             pred_null_v = (
@@ -417,6 +421,7 @@ class SD3Euler(StableDiffusion3Base):
                     residual_origin_layer=residual_origin_layer,
                     residual_weights=effective_residual_weights,
                     residual_use_layernorm=residual_use_layernorm,  # ⭐ 传递
+                    residual_rotation_matrices=residual_rotation_matrices,
                 )
                 if cfg_scale != 1.0 else 0.0
             )
