@@ -9,7 +9,7 @@ from torchvision.utils import save_image
 from tqdm import tqdm
 from torchvision.transforms import ToTensor  # 其实现在没用到，但留着也无妨
 from sampler import SD3Euler
-from util import set_seed
+from util import load_residual_procrustes, set_seed
 from lora_utils import *
 
 torch.set_grad_enabled(False)
@@ -26,6 +26,7 @@ class SD3ImageGenerator:
         residual_target_layers=None,
         residual_origin_layer=None,
         residual_weights=None,
+        residual_rotation_matrices=None,
     ):
         """
         封装 sampler，支持普通 sample 和 sample_residual
@@ -43,6 +44,7 @@ class SD3ImageGenerator:
         self.residual_target_layers = residual_target_layers
         self.residual_origin_layer = residual_origin_layer
         self.residual_weights = residual_weights
+        self.residual_rotation_matrices = residual_rotation_matrices
 
     def generate(
         self,
@@ -54,6 +56,7 @@ class SD3ImageGenerator:
         residual_target_layers=None,
         residual_origin_layer=None,
         residual_weights=None,
+        residual_rotation_matrices=None,
     ):
         """
         如果 residual_origin_layer is None → 普通 sample
@@ -64,6 +67,7 @@ class SD3ImageGenerator:
         rt = residual_target_layers if residual_target_layers is not None else self.residual_target_layers
         ro = residual_origin_layer if residual_origin_layer is not None else self.residual_origin_layer
         rw = residual_weights if residual_weights is not None else self.residual_weights
+        rr = residual_rotation_matrices if residual_rotation_matrices is not None else self.residual_rotation_matrices
 
         set_seed(seed)
         prompts = [prompt]
@@ -90,6 +94,7 @@ class SD3ImageGenerator:
                     residual_target_layers=rt,
                     residual_origin_layer=ro,
                     residual_weights=rw,
+                    residual_rotation_matrices=rr,
                 )
         return img
 
@@ -147,6 +152,7 @@ def parse_args():
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
+    parser.add_argument("--residual_procrustes_path", type=str, default=None)
 
 
     # ---------- LoRA 采样支持 ---------- #
@@ -199,12 +205,28 @@ def main(opt):
     print(f"[Rank {opt.rank}] Using device: {device} | world_size={opt.world_size}")
 
     # ========= 加载一次生成器（每个进程 / 每张卡各自一份） =========
+    residual_rotation_matrices = None
+    if opt.residual_procrustes_path is not None:
+        residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
+            opt.residual_procrustes_path
+        )
+        if opt.residual_target_layers is None and target_layers is not None:
+            opt.residual_target_layers = list(target_layers)
+        elif target_layers is not None and opt.residual_target_layers is not None:
+            if list(target_layers) != list(opt.residual_target_layers):
+                raise ValueError(
+                    "residual_target_layers does not match target_layers in the Procrustes file."
+                )
+        if opt.residual_origin_layer is None and isinstance(meta, dict):
+            opt.residual_origin_layer = meta.get("origin_layer")
+
     generator = SD3ImageGenerator(
         model_key=opt.model,
         load_ckpt_path=None,
         residual_target_layers=opt.residual_target_layers,
         residual_origin_layer=opt.residual_origin_layer,
         residual_weights=opt.residual_weights,
+        residual_rotation_matrices=residual_rotation_matrices,
     )
 
 

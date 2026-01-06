@@ -11,7 +11,7 @@ from einops import rearrange
 from torchvision.utils import save_image
 
 from sampler import SD3Euler
-from util import set_seed
+from util import load_residual_procrustes, set_seed
 from lora_utils import *
 
 torch.set_grad_enabled(False)
@@ -28,6 +28,7 @@ class SD3ImageGenerator:
         residual_target_layers=None,
         residual_origin_layer=None,
         residual_weights=None,
+        residual_rotation_matrices=None,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -41,6 +42,7 @@ class SD3ImageGenerator:
         self.residual_target_layers = residual_target_layers
         self.residual_origin_layer = residual_origin_layer
         self.residual_weights = residual_weights
+        self.residual_rotation_matrices = residual_rotation_matrices
 
 
     def generate_image(
@@ -53,11 +55,13 @@ class SD3ImageGenerator:
         residual_target_layers=None,
         residual_origin_layer=None,
         residual_weights=None,
+        residual_rotation_matrices=None,
     ):
         # 优先级：函数参数 > 初始化参数
         rt = residual_target_layers if residual_target_layers is not None else self.residual_target_layers
         ro = residual_origin_layer if residual_origin_layer is not None else self.residual_origin_layer
         rw = residual_weights if residual_weights is not None else self.residual_weights
+        rr = residual_rotation_matrices if residual_rotation_matrices is not None else self.residual_rotation_matrices
 
         set_seed(seed)
         prompts = [prompt]
@@ -81,6 +85,7 @@ class SD3ImageGenerator:
                     residual_target_layers=rt,
                     residual_origin_layer=ro,
                     residual_weights=rw,
+                    residual_rotation_matrices=rr,
                 )
         return img
 
@@ -101,6 +106,7 @@ def parse_args():
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
+    parser.add_argument("--residual_procrustes_path", type=str, default=None)
 
     # ---------- LoRA 采样支持 ---------- #
     parser.add_argument('--lora_ckpt', type=str, default=None, help='Path to LoRA-only checkpoint (.pth)')
@@ -141,12 +147,28 @@ def main(args):
     print(f"[Rank {args.rank}] 总任务: {total_items}，本卡处理: {len(local_indices)}")
 
     # ===== 初始化生成器（每张卡一次）=====
+    residual_rotation_matrices = None
+    if args.residual_procrustes_path is not None:
+        residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
+            args.residual_procrustes_path
+        )
+        if args.residual_target_layers is None and target_layers is not None:
+            args.residual_target_layers = list(target_layers)
+        elif target_layers is not None and args.residual_target_layers is not None:
+            if list(target_layers) != list(args.residual_target_layers):
+                raise ValueError(
+                    "residual_target_layers does not match target_layers in the Procrustes file."
+                )
+        if args.residual_origin_layer is None and isinstance(meta, dict):
+            args.residual_origin_layer = meta.get("origin_layer")
+
     generator = SD3ImageGenerator(
         model='sd3',
         load_dir=None,
         residual_target_layers=args.residual_target_layers,
         residual_origin_layer=args.residual_origin_layer,
         residual_weights=args.residual_weights,
+        residual_rotation_matrices=residual_rotation_matrices,
     )
 
     # ---------- 如果提供了 LoRA ckpt，注入 + 加载 ----------
@@ -207,6 +229,7 @@ def main(args):
                         residual_target_layers=args.residual_target_layers,
                         residual_origin_layer=args.residual_origin_layer,
                         residual_weights=args.residual_weights,
+                        residual_rotation_matrices=residual_rotation_matrices,
                     )
 
                     # ====== 新增：统一成 [C, H, W] ======
