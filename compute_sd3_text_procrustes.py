@@ -213,18 +213,22 @@ def run(args: argparse.Namespace):
         prompt_emb = prompt_emb.to(dtype=denoiser.dtype)
         pooled_emb = pooled_emb.to(dtype=denoiser.dtype)
 
-        gen = torch.Generator(device=device)
-        gen.manual_seed(int(args.seed or 0) + pair_idx)
+        gen_cpu = torch.Generator(device="cpu")
+        gen_cpu.manual_seed(int(args.seed or 0) + pair_idx)
+
+        gen_cuda = torch.Generator(device=device)
+        gen_cuda.manual_seed(int(args.seed or 0) + pair_idx)
         timestep_idx = int(
             torch.randint(
                 0,
                 int(base.scheduler.config.num_train_timesteps),
                 (1,),
-                generator=gen,
+                generator=gen_cpu,
             ).item()
         )
+
         z_t, t_tensor = build_noisy_latent_like_training(
-            base.scheduler, z0, timestep_idx, generator=gen
+            base.scheduler, z0, timestep_idx, generator=gen_cuda
         )
         z_t = z_t.to(dtype=denoiser.dtype)
 
@@ -248,14 +252,18 @@ def run(args: argparse.Namespace):
             )
 
         origin_state = txt_input_states[args.origin_layer][0].float().cpu()
+
         if token_mask is not None:
-            origin_state = origin_state[token_mask]
+            token_mask_cpu = token_mask.cpu()
+            origin_state = origin_state[token_mask_cpu]
         origin_chunks.append(origin_state)
 
         for layer in target_layers:
             target_state = txt_input_states[layer][0].float().cpu()
+
             if token_mask is not None:
-                target_state = target_state[token_mask]
+                target_state = target_state[token_mask_cpu]
+
             target_chunks[layer].append(target_state)
 
     if not origin_chunks:
@@ -298,7 +306,7 @@ def run(args: argparse.Namespace):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="sd3")
+    parser.add_argument("--model", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/base_models/Diffusion/sd3")
     parser.add_argument("--load-ckpt", type=str, default=None)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--precision", type=str, default="auto", choices=["auto", "fp16", "bf16", "fp32"])
@@ -315,7 +323,7 @@ def main():
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--seed", type=int, default=0)
 
-    parser.add_argument("--origin-layer", type=int, default=0)
+    parser.add_argument("--origin-layer", type=int, default=1)
     parser.add_argument("--target-layer-start", type=int, default=2)
     parser.add_argument("--target-layers", type=int, nargs="+", default=None)
     parser.add_argument("--no-padding-mask", action="store_false", dest="use_padding_mask", default=True)

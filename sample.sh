@@ -12,7 +12,7 @@ IMGSIZE=1024
 BATCHSIZE=1
 
 
-SAVEDIR="/inspire/hdd/project/chineseculture/public/yuxuan/SD3-Residual/logs/generate/lora/test"
+SAVEDIR="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/generate/test"
 
 
 ### -----------------------------
@@ -21,17 +21,12 @@ SAVEDIR="/inspire/hdd/project/chineseculture/public/yuxuan/SD3-Residual/logs/gen
 # 支持任意 residual 参组合
 RES_ORIGIN=1
 
-RES_TARGET="$(seq -s ' ' 4 13)"
+RES_TARGET="$(seq -s ' ' 2 21)"
 
-RES_WEIGHT="$(printf '0.1 %.0s' $(seq 4 13))"
+RES_WEIGHT="$(printf '0.1 %.0s' $(seq 2 21))"
 
 
 
-LORA_CKPT="/inspire/hdd/project/chineseculture/public/yuxuan/SD3-Residual/logs/sd3-lora/ds-qwen-l333_epochs-5/bs-256_lrLoRA-1e-5_warmup-200-time-logitnorm/lora-r256-a256-d0.05-t-to_q-to_k-to_v-to_out.0/Residual--target-4to13__origin-1__w-0.1-LayerNorm-StopGrad/20251206-134312/sd3_lora_dp_train_cached/lora_step2000.pth"
-
-LORA_TG="to_q,to_k,to_v,to_out.0"
-LORA_RANK=256
-LORA_ALPHA=256
 
 
 PROMPT="A truck and a microwave."
@@ -67,9 +62,6 @@ python sample.py \
     --residual_target_layers $RES_TARGET \
     --residual_origin_layer $RES_ORIGIN \
     --residual_weights $RES_WEIGHT \
-    --lora_ckpt $LORA_CKPT --lora_target $LORA_TG --lora_rank $LORA_RANK --lora_alpha $LORA_ALPHA \
-
-
 
 
 

@@ -9,6 +9,9 @@ from torch import nn
 from torch.amp import autocast
 from util import set_seed
 
+from typing import Callable, Optional
+import torch
+
 
 def build_timestep_residual_weight_fn(
     name: Optional[str] = "linear",
@@ -21,22 +24,27 @@ def build_timestep_residual_weight_fn(
 
     def _apply_power(weight: torch.Tensor) -> torch.Tensor:
         if power != 1.0:
-            return weight**power
+            return weight ** power
         return weight
 
+    def constant(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
+        weight = torch.ones_like(timestep, dtype=torch.float32)
+        return _apply_power(weight)
+
     def linear(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
-        weight = 1.0 - timestep.float() / float(num_train_timesteps)
+        print(timestep.float())
         weight = weight.clamp(0.0, 1.0)
         return _apply_power(weight)
 
+    def cosine(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
+        weight = 0.5 * (1.0 + torch.cos(torch.pi * timestep.float() / float(num_train_timesteps)))
+        return _apply_power(weight.clamp(0.0, 1.0))
+
+    if name == "constant":
+        return constant
     if name == "linear":
         return linear
-
     if name == "cosine":
-        def cosine(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
-            weight = 0.5 * (1.0 + torch.cos(torch.pi * timestep.float() / float(num_train_timesteps)))
-            return _apply_power(weight.clamp(0.0, 1.0))
-
         return cosine
 
     raise ValueError(f"Unsupported timestep residual weight fn: {name}")

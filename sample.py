@@ -93,8 +93,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--timestep_residual_weight_fn",
         type=str,
-        default="linear",
-        choices=["linear", "cosine"],
+        default="constant",
         help="Mapping from timestep (0-1000) to residual weight multiplier.",
     )
     parser.add_argument(
