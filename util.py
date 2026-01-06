@@ -121,6 +121,29 @@ def load_residual_procrustes(
     return rotation_matrices, target_layers, data
 
 
+def select_residual_rotations(
+    rotation_matrices: torch.Tensor,
+    saved_target_layers: Optional[list[int]],
+    residual_target_layers: Optional[list[int]],
+):
+    if saved_target_layers is None:
+        return rotation_matrices, residual_target_layers
+
+    saved_layers_list = list(saved_target_layers)
+    if residual_target_layers is None:
+        return rotation_matrices, saved_layers_list
+
+    missing_layers = [layer for layer in residual_target_layers if layer not in saved_layers_list]
+    if missing_layers:
+        raise ValueError(
+            "residual_target_layers must be a subset of target_layers in the Procrustes file. "
+            f"Missing: {missing_layers}"
+        )
+
+    indices = [saved_layers_list.index(layer) for layer in residual_target_layers]
+    return rotation_matrices[indices], residual_target_layers
+
+
 def denormalize(imgs: torch.Tensor) -> torch.Tensor:
     """
     将像素值范围为 [-1, 1] 的图像张量转换为 [0, 255] 的 uint8 类型张量。

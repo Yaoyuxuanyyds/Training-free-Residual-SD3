@@ -9,7 +9,7 @@ from torchvision.utils import save_image
 from tqdm import tqdm
 from torchvision.transforms import ToTensor  # 其实现在没用到，但留着也无妨
 from sampler import SD3Euler
-from util import load_residual_procrustes, set_seed
+from util import load_residual_procrustes, select_residual_rotations, set_seed
 from lora_utils import *
 
 torch.set_grad_enabled(False)
@@ -210,13 +210,9 @@ def main(opt):
         residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
             opt.residual_procrustes_path
         )
-        if opt.residual_target_layers is None and target_layers is not None:
-            opt.residual_target_layers = list(target_layers)
-        elif target_layers is not None and opt.residual_target_layers is not None:
-            if list(target_layers) != list(opt.residual_target_layers):
-                raise ValueError(
-                    "residual_target_layers does not match target_layers in the Procrustes file."
-                )
+        residual_rotation_matrices, opt.residual_target_layers = select_residual_rotations(
+            residual_rotation_matrices, target_layers, opt.residual_target_layers
+        )
         if opt.residual_origin_layer is None and isinstance(meta, dict):
             opt.residual_origin_layer = meta.get("origin_layer")
 
