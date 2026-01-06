@@ -11,7 +11,7 @@ from einops import rearrange
 from torchvision.utils import save_image
 
 from sampler import SD3Euler
-from util import load_residual_procrustes, set_seed
+from util import load_residual_procrustes, select_residual_rotations, set_seed
 from lora_utils import *
 
 torch.set_grad_enabled(False)
@@ -152,13 +152,9 @@ def main(args):
         residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
             args.residual_procrustes_path
         )
-        if args.residual_target_layers is None and target_layers is not None:
-            args.residual_target_layers = list(target_layers)
-        elif target_layers is not None and args.residual_target_layers is not None:
-            if list(target_layers) != list(args.residual_target_layers):
-                raise ValueError(
-                    "residual_target_layers does not match target_layers in the Procrustes file."
-                )
+        residual_rotation_matrices, args.residual_target_layers = select_residual_rotations(
+            residual_rotation_matrices, target_layers, args.residual_target_layers
+        )
         if args.residual_origin_layer is None and isinstance(meta, dict):
             args.residual_origin_layer = meta.get("origin_layer")
 
