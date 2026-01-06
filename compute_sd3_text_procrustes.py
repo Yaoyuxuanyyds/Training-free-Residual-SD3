@@ -215,8 +215,16 @@ def run(args: argparse.Namespace):
 
         gen = torch.Generator(device=device)
         gen.manual_seed(int(args.seed or 0) + pair_idx)
+        timestep_idx = int(
+            torch.randint(
+                0,
+                int(base.scheduler.config.num_train_timesteps),
+                (1,),
+                generator=gen,
+            ).item()
+        )
         z_t, t_tensor = build_noisy_latent_like_training(
-            base.scheduler, z0, args.timestep_idx, generator=gen
+            base.scheduler, z0, timestep_idx, generator=gen
         )
         z_t = z_t.to(dtype=denoiser.dtype)
 
@@ -281,7 +289,7 @@ def run(args: argparse.Namespace):
         "feature_dim": X.shape[1],
         "num_samples": total_pairs,
         "num_valid_tokens": X.shape[0],
-        "timestep_idx": args.timestep_idx,
+        "timestep_sampling": "per-sample-random",
         "use_padding_mask": args.use_padding_mask,
     }
     torch.save(payload, args.output)
@@ -305,7 +313,6 @@ def main():
 
     parser.add_argument("--height", type=int, default=1024)
     parser.add_argument("--width", type=int, default=1024)
-    parser.add_argument("--timestep-idx", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
 
     parser.add_argument("--origin-layer", type=int, default=0)

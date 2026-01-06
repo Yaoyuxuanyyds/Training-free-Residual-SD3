@@ -15,6 +15,7 @@ This document describes the implementation of the **LN + Rescale + Orthogonal Pr
   \min_R \|\bar{X}R - \bar{Y}\|_F^2, \; \text{s.t.}\; R^\top R = I
   \]
   where `X` is the origin layer token set and `Y` is the target layer token set (both centered).
+- For each sample, the script **randomly samples a timestep index** (no fixed `timestep_idx`).
 
 ### Output format
 The script saves a `.pt` file with:
@@ -40,7 +41,6 @@ python compute_sd3_text_procrustes.py \
   --num-samples 200 \
   --origin-layer 0 \
   --target-layer-start 2 \
-  --timestep-idx 0 \
   --output procrustes_rotations.pt
 ```
 
