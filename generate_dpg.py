@@ -7,7 +7,7 @@ from torchvision.transforms.functional import InterpolationMode
 import torchvision.transforms as torch_transforms
 from PIL import Image
 
-from sampler import SD3Euler
+from sampler import SD3Euler, build_timestep_residual_weight_fn
 from util import load_residual_procrustes, select_residual_rotations
 from lora_utils import *
 
@@ -105,6 +105,18 @@ if __name__ == "__main__":
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
+    parser.add_argument(
+        "--timestep_residual_weight_fn",
+        type=str,
+        default="constant",
+        help="Mapping from timestep (0-1000) to residual weight multiplier.",
+    )
+    parser.add_argument(
+        "--timestep_residual_weight_power",
+        type=float,
+        default=1.0,
+        help="Optional power for timestep residual weight mapping.",
+    )
     # 多 GPU 分片参数
     parser.add_argument(
         "--world_size",
@@ -219,6 +231,10 @@ if __name__ == "__main__":
                     residual_origin_layer=args.residual_origin_layer,
                     residual_weights=args.residual_weights,
                     residual_rotation_matrices=residual_rotation_matrices,
+                    residual_timestep_weight_fn=build_timestep_residual_weight_fn(
+                        args.timestep_residual_weight_fn,
+                        power=args.timestep_residual_weight_power,
+                    ),
                 )
 
         # imgs shape: [4, 3, 1024, 1024]
