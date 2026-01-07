@@ -174,6 +174,12 @@ def parse_args():
         default=1.0,
         help="Optional power for timestep residual weight mapping.",
     )
+    parser.add_argument(
+        "--timestep_residual_weight_exp_alpha",
+        type=float,
+        default=1.5,
+        help="Exponent alpha for exponential timestep residual weight mapping.",
+    )
 
 
     # ---------- LoRA 采样支持 ---------- #
@@ -247,6 +253,7 @@ def main(opt):
         residual_timestep_weight_fn=build_timestep_residual_weight_fn(
             opt.timestep_residual_weight_fn,
             power=opt.timestep_residual_weight_power,
+            exp_alpha=opt.timestep_residual_weight_exp_alpha,
         ),
     )
 

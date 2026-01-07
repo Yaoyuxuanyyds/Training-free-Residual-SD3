@@ -117,6 +117,12 @@ if __name__ == "__main__":
         default=1.0,
         help="Optional power for timestep residual weight mapping.",
     )
+    parser.add_argument(
+        "--timestep_residual_weight_exp_alpha",
+        type=float,
+        default=1.5,
+        help="Exponent alpha for exponential timestep residual weight mapping.",
+    )
     # 多 GPU 分片参数
     parser.add_argument(
         "--world_size",
@@ -234,6 +240,7 @@ if __name__ == "__main__":
                     residual_timestep_weight_fn=build_timestep_residual_weight_fn(
                         args.timestep_residual_weight_fn,
                         power=args.timestep_residual_weight_power,
+                        exp_alpha=args.timestep_residual_weight_exp_alpha,
                     ),
                 )
 

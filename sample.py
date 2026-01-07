@@ -102,6 +102,12 @@ if __name__ == '__main__':
         default=1.0,
         help="Optional power for timestep residual weight mapping.",
     )
+    parser.add_argument(
+        "--timestep_residual_weight_exp_alpha",
+        type=float,
+        default=1.5,
+        help="Exponent alpha for exponential timestep residual weight mapping.",
+    )
 
 
     # ---------- LoRA 采样支持 ---------- #
@@ -218,6 +224,7 @@ if __name__ == '__main__':
                         residual_timestep_weight_fn=build_timestep_residual_weight_fn(
                             args.timestep_residual_weight_fn,
                             power=args.timestep_residual_weight_power,
+                            exp_alpha=args.timestep_residual_weight_exp_alpha,
                         ),
                     )
             # ----------------------------------------------------
@@ -268,6 +275,7 @@ if __name__ == '__main__':
                                         residual_timestep_weight_fn=build_timestep_residual_weight_fn(
                                             args.timestep_residual_weight_fn,
                                             power=args.timestep_residual_weight_power,
+                                            exp_alpha=args.timestep_residual_weight_exp_alpha,
                                         ),
                                     )       
 
