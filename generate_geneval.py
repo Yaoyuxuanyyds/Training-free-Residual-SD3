@@ -10,7 +10,7 @@ from tqdm import tqdm, trange
 from einops import rearrange
 from torchvision.utils import save_image
 
-from sampler import SD3Euler
+from sampler import SD3Euler, build_timestep_residual_weight_fn
 from util import load_residual_procrustes, select_residual_rotations, set_seed
 from lora_utils import *
 
@@ -29,6 +29,7 @@ class SD3ImageGenerator:
         residual_origin_layer=None,
         residual_weights=None,
         residual_rotation_matrices=None,
+        residual_timestep_weight_fn=None,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -43,6 +44,7 @@ class SD3ImageGenerator:
         self.residual_origin_layer = residual_origin_layer
         self.residual_weights = residual_weights
         self.residual_rotation_matrices = residual_rotation_matrices
+        self.residual_timestep_weight_fn = residual_timestep_weight_fn
 
 
     def generate_image(
@@ -56,12 +58,18 @@ class SD3ImageGenerator:
         residual_origin_layer=None,
         residual_weights=None,
         residual_rotation_matrices=None,
+        residual_timestep_weight_fn=None,
     ):
         # 优先级：函数参数 > 初始化参数
         rt = residual_target_layers if residual_target_layers is not None else self.residual_target_layers
         ro = residual_origin_layer if residual_origin_layer is not None else self.residual_origin_layer
         rw = residual_weights if residual_weights is not None else self.residual_weights
         rr = residual_rotation_matrices if residual_rotation_matrices is not None else self.residual_rotation_matrices
+        rtw = (
+            residual_timestep_weight_fn
+            if residual_timestep_weight_fn is not None
+            else self.residual_timestep_weight_fn
+        )
 
         set_seed(seed)
         prompts = [prompt]
@@ -86,6 +94,7 @@ class SD3ImageGenerator:
                     residual_origin_layer=ro,
                     residual_weights=rw,
                     residual_rotation_matrices=rr,
+                    residual_timestep_weight_fn=rtw,
                 )
         return img
 
@@ -107,6 +116,18 @@ def parse_args():
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
+    parser.add_argument(
+        "--timestep_residual_weight_fn",
+        type=str,
+        default="constant",
+        help="Mapping from timestep (0-1000) to residual weight multiplier.",
+    )
+    parser.add_argument(
+        "--timestep_residual_weight_power",
+        type=float,
+        default=1.0,
+        help="Optional power for timestep residual weight mapping.",
+    )
 
     # ---------- LoRA 采样支持 ---------- #
     parser.add_argument('--lora_ckpt', type=str, default=None, help='Path to LoRA-only checkpoint (.pth)')
@@ -165,6 +186,10 @@ def main(args):
         residual_origin_layer=args.residual_origin_layer,
         residual_weights=args.residual_weights,
         residual_rotation_matrices=residual_rotation_matrices,
+        residual_timestep_weight_fn=build_timestep_residual_weight_fn(
+            args.timestep_residual_weight_fn,
+            power=args.timestep_residual_weight_power,
+        ),
     )
 
     # ---------- 如果提供了 LoRA ckpt，注入 + 加载 ----------
@@ -226,6 +251,7 @@ def main(args):
                         residual_origin_layer=args.residual_origin_layer,
                         residual_weights=args.residual_weights,
                         residual_rotation_matrices=residual_rotation_matrices,
+                        residual_timestep_weight_fn=generator.residual_timestep_weight_fn,
                     )
 
                     # ====== 新增：统一成 [C, H, W] ======
