@@ -40,7 +40,7 @@ EXP_TARGET_SHORT="${FIRST_LAYER}to${LAST_LAYER}"
 FIRST_WEIGHT=$(echo "$RES_WEIGHT" | awk '{print $1}')
 EXP_WEIGHT_SHORT="${FIRST_WEIGHT}"
 # SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm-Procruste"
-SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm-Procruste-exp-pro"
+SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm-Procruste-exp"
 # SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm"
 # SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm-exp"
 
@@ -65,7 +65,7 @@ python sample.py \
     --residual_target_layers $RES_TARGET \
     --residual_origin_layer $RES_ORIGIN \
     --residual_weights $RES_WEIGHT \
-    --residual_procrustes_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_blip3o10k_ln.pt
+    --residual_procrustes_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k.pt
 
 
 
