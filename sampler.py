@@ -14,8 +14,9 @@ import torch
 
 
 def build_timestep_residual_weight_fn(
-    name: Optional[str] = "linear",
+    name: Optional[str] = "constant",
     power: float = 1.0,
+    exp_alpha: float = 1.5,   
 ) -> Optional[Callable[[torch.Tensor, int], torch.Tensor]]:
     if name is None:
         return None
@@ -32,13 +33,18 @@ def build_timestep_residual_weight_fn(
         return _apply_power(weight)
 
     def linear(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
-        print(timestep.float())
+        weight = timestep.float() / float(num_train_timesteps)
         weight = weight.clamp(0.0, 1.0)
         return _apply_power(weight)
 
     def cosine(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
-        weight = 0.5 * (1.0 + torch.cos(torch.pi * timestep.float() / float(num_train_timesteps)))
+        weight = 0.5 * (1.0 + torch.cos(torch.pi * (1 - timestep.float() / float(num_train_timesteps))))
         return _apply_power(weight.clamp(0.0, 1.0))
+
+    def exponential(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
+        s = timestep.float() / float(num_train_timesteps)
+        weight = torch.exp(-exp_alpha * s)
+        return _apply_power(weight)
 
     if name == "constant":
         return constant
@@ -46,6 +52,8 @@ def build_timestep_residual_weight_fn(
         return linear
     if name == "cosine":
         return cosine
+    if name in ("exp", "exponential"):
+        return exponential
 
     raise ValueError(f"Unsupported timestep residual weight fn: {name}")
 
