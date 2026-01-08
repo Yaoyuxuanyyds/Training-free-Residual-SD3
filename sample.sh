@@ -12,7 +12,7 @@ IMGSIZE=1024
 BATCHSIZE=1
 
 
-SAVEDIR="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/generate/test3"
+SAVEDIR="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/generate/test1"
 
 
 ### -----------------------------
@@ -29,7 +29,7 @@ RES_WEIGHT="$(printf '0.1 %.0s' $(seq 2 21))"
 
 
 
-PROMPT="a photo of a green traffic light."
+PROMPT="three black cats standing next to two orange cats."
 
 
 # 自动压缩 target layers 显示形式
@@ -40,7 +40,7 @@ EXP_TARGET_SHORT="${FIRST_LAYER}to${LAST_LAYER}"
 FIRST_WEIGHT=$(echo "$RES_WEIGHT" | awk '{print $1}')
 EXP_WEIGHT_SHORT="${FIRST_WEIGHT}"
 # SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm-Procruste"
-SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm-Procruste-exp"
+SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm-Procruste-exp-Pro"
 # SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm"
 # SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm-exp"
 
@@ -62,10 +62,11 @@ python sample.py \
     --save_name $SAVENAME \
     --prompt "$PROMPT" \
     --timestep_residual_weight_fn "exp" \
+    --timestep_residual_weight_exp_alpha 3.0 \
     --residual_target_layers $RES_TARGET \
     --residual_origin_layer $RES_ORIGIN \
     --residual_weights $RES_WEIGHT \
-    --residual_procrustes_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k.pt
+    --residual_procrustes_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln.pt
 
 
 
