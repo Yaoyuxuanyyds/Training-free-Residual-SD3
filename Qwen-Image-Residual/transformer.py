@@ -20,6 +20,9 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
         self.residual_origin_layer: Optional[int] = None
         self.residual_target_layers: List[int] = []
         self.residual_weights: Optional[torch.Tensor] = None
+        self.residual_use_layernorm: bool = True
+        self.residual_stop_grad: bool = True
+        self.residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None
 
         self._saved_origin_text: Optional[torch.Tensor] = None
 
@@ -36,17 +39,56 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
         x_norm = (x - mean) / (std + eps)
         return x_norm, mean, std
 
+    def _apply_residual(
+        self,
+        target: torch.Tensor,
+        origin: torch.Tensor,
+        w: torch.Tensor,
+        use_layernorm: bool = True,
+        stop_grad: bool = True,
+        rotation_matrix: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if stop_grad:
+            target_nograd = target.detach()
+            origin_nograd = origin.detach()
+        else:
+            target_nograd = target
+            origin_nograd = origin
+
+        target_norm, target_mean, target_std = self._standardize_tokenwise(target_nograd)
+        origin_norm, _, _ = self._standardize_tokenwise(origin_nograd)
+
+        if rotation_matrix is not None:
+            origin_norm = torch.matmul(origin_norm, rotation_matrix)
+
+        if w >= 0:
+            mixed_norm = target_norm + w * origin_norm
+        else:
+            mixed_norm = target_norm * (1 - w)
+
+        if use_layernorm:
+            mixed_norm = torch.nn.functional.layer_norm(
+                mixed_norm,
+                normalized_shape=mixed_norm.shape[-1:],
+                eps=1e-6,
+            )
+
+        return mixed_norm * target_std + target_mean
 
     def set_residual_config(
         self,
         residual_origin_layer: Optional[int],
         residual_target_layers: Optional[Union[List[int], torch.Tensor]],
         residual_weights: Optional[Union[List[float], torch.Tensor]],
+        residual_use_layernorm: bool = True,
+        residual_stop_grad: bool = True,
+        residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
     ):
         if residual_origin_layer is None:
             self.residual_origin_layer = None
             self.residual_target_layers = []
             self.residual_weights = None
+            self.residual_rotation_matrices = None
             self._saved_origin_text = None
             return
 
@@ -61,6 +103,9 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
         self.residual_weights = residual_weights
 
         self.residual_origin_layer = int(residual_origin_layer)
+        self.residual_use_layernorm = bool(residual_use_layernorm)
+        self.residual_stop_grad = bool(residual_stop_grad)
+        self.residual_rotation_matrices = residual_rotation_matrices
         self._saved_origin_text = None
 
         logger.info(
@@ -68,6 +113,14 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
             f"targets={self.residual_target_layers}, "
             f"weights={self.residual_weights}"
         )
+
+    def set_residual_weights(self, residual_weights: Optional[Union[List[float], torch.Tensor]]):
+        if residual_weights is None:
+            self.residual_weights = None
+            return
+        if isinstance(residual_weights, (list, tuple)):
+            residual_weights = torch.tensor(residual_weights, dtype=torch.float32)
+        self.residual_weights = residual_weights
 
     def forward(
         self,
@@ -81,6 +134,7 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
         attention_kwargs: Optional[Dict[str, Any]] = None,
         return_dict: bool = True,
         target_layers: Optional[List[int]] = None,
+        output_text_inputs: bool = False,
     ):
 
         if attention_kwargs is not None:
@@ -96,6 +150,7 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
         collect_txt_features = target_layers is not None and len(target_layers) > 0
         target_layers = sorted(set(target_layers)) if collect_txt_features else []
         txt_feats_list: List[torch.Tensor] = []
+        txt_input_states_list: List[torch.Tensor] = []
         context_embedder_output: List[torch.Tensor] = []
 
         if guidance is not None:
@@ -109,67 +164,85 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
 
         image_rotary_emb = self.pos_embed(img_shapes, txt_seq_lens, device=hidden_states.device)
 
-        self._saved_origin_text = None  # 每次 forward 清空
-
         use_residual = (
             self.residual_origin_layer is not None
             and self.residual_weights is not None
             and len(self.residual_target_layers) > 0
         )
 
+        residual_rotations = None
+        if use_residual and self.residual_rotation_matrices is not None:
+            if isinstance(self.residual_rotation_matrices, (list, tuple)):
+                if all(torch.is_tensor(r) for r in self.residual_rotation_matrices):
+                    residual_rotations = torch.stack(self.residual_rotation_matrices, dim=0)
+                else:
+                    residual_rotations = torch.tensor(self.residual_rotation_matrices)
+            elif torch.is_tensor(self.residual_rotation_matrices):
+                residual_rotations = self.residual_rotation_matrices
+            else:
+                raise TypeError(
+                    "residual_rotation_matrices must be a Tensor or a list/tuple of Tensors."
+                )
+            if residual_rotations.dim() == 2:
+                residual_rotations = residual_rotations.unsqueeze(0)
+            if residual_rotations.dim() != 3:
+                raise ValueError(
+                    "residual_rotation_matrices must have shape (N, D, D) or (D, D)."
+                )
+            residual_rotations = residual_rotations.to(
+                device=encoder_hidden_states.device,
+                dtype=encoder_hidden_states.dtype,
+            )
+            if residual_rotations.shape[0] != len(self.residual_target_layers):
+                raise ValueError(
+                    "residual_rotation_matrices length must match residual_target_layers."
+                )
+            if residual_rotations.shape[-1] != encoder_hidden_states.shape[-1] or \
+                residual_rotations.shape[-2] != encoder_hidden_states.shape[-1]:
+                raise ValueError(
+                    "residual_rotation_matrices feature dimension must match encoder_hidden_states."
+                )
+
         target_set = set(self.residual_target_layers)
+        pre_encoder_states: List[torch.Tensor] = []
 
         if collect_txt_features:
             context_embedder_output.append(encoder_hidden_states.detach())
 
         for layer_idx, block in enumerate(self.transformer_blocks):
+            if output_text_inputs:
+                txt_input_states_list.append(encoder_hidden_states)
 
-            # 1. origin layer：保存 text tokens 输入
-            if use_residual and layer_idx == self.residual_origin_layer:
-                self._saved_origin_text = encoder_hidden_states.detach()
+            if use_residual:
+                pre_encoder_states.append(encoder_hidden_states)
 
-            # # 2. target layers：注入 residual
-            # if use_residual and layer_idx in target_set and self._saved_origin_text is not None:
-            #     tid = self.residual_target_layers.index(layer_idx)
-            #     w = self.residual_weights[tid].to(
-            #         encoder_hidden_states.device, encoder_hidden_states.dtype
-            #     )
+                if layer_idx in target_set:
+                    tid = self.residual_target_layers.index(layer_idx)
+                    w = self.residual_weights[tid].to(
+                        encoder_hidden_states.device, encoder_hidden_states.dtype
+                    )
 
-            #     encoder_hidden_states = (
-            #         encoder_hidden_states + w * self._saved_origin_text
-            #     )
-            # 2. target layers：注入 residual（标准化 → 残差 → LN → rescale & reshift）
-            if use_residual and layer_idx in target_set and self._saved_origin_text is not None:
+                    if 0 <= self.residual_origin_layer < len(pre_encoder_states):
+                        origin = pre_encoder_states[self.residual_origin_layer]
+                    else:
+                        raise ValueError(
+                            f"Invalid residual_origin_layer={self.residual_origin_layer}"
+                        )
 
-                tid = self.residual_target_layers.index(layer_idx)
-                w = self.residual_weights[tid].to(
-                    encoder_hidden_states.device, encoder_hidden_states.dtype
-                )
+                    if origin.shape != encoder_hidden_states.shape:
+                        raise ValueError(
+                            f"[Residual] Shape mismatch: origin={origin.shape} vs target={encoder_hidden_states.shape}"
+                        )
 
-                # 当前层 (target) text tokens
-                target = encoder_hidden_states
-                # origin layer 中保存的 text tokens
-                origin = self._saved_origin_text.to(
-                    encoder_hidden_states.device, encoder_hidden_states.dtype
-                )
-
-                # === 1) origin 与 target 各自 token-wise 标准化 (z-score) ===
-                target_norm, target_mean, target_std = self._standardize_tokenwise(target)
-                origin_norm, _, _ = self._standardize_tokenwise(origin)
-
-                # === 2) 在标准化空间中 residual ===
-                mixed_norm = target_norm + w * origin_norm
-
-                # === 3) 对 residual 结果做一次 LayerNorm ===
-                # LN 在最后一维 hidden_dim 上做归一化
-                mixed_norm_ln = torch.nn.functional.layer_norm(
-                    mixed_norm, 
-                    normalized_shape=mixed_norm.shape[-1:],
-                    eps=1e-6
-                )
-
-                # === 4) 用 target 的 mean/std 恢复回 target layer 的原始分布 ===
-                encoder_hidden_states = mixed_norm_ln * target_std + target_mean
+                    rotation = residual_rotations[tid] if residual_rotations is not None else None
+                    encoder_hidden_states = self._apply_residual(
+                        encoder_hidden_states,
+                        origin,
+                        w,
+                        use_layernorm=self.residual_use_layernorm,
+                        stop_grad=self.residual_stop_grad,
+                        rotation_matrix=rotation,
+                    )
 
 
             # 3. 正常执行 block
@@ -195,13 +268,21 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
 
         if collect_txt_features:
             # 当需要文本特征时，总是返回字典，便于可视化脚本读取
-            return {
+            result = {
                 "sample": output,
                 "txt_feats_list": txt_feats_list,
                 "context_embedder_output": context_embedder_output,
             }
+            if output_text_inputs:
+                result["txt_input_states"] = txt_input_states_list
+            return result
 
         if not return_dict:
+            if output_text_inputs:
+                return {
+                    "sample": output,
+                    "txt_input_states": txt_input_states_list,
+                }
             return (output,)
 
         return Transformer2DModelOutput(sample=output)
