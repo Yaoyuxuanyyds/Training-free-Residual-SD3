@@ -286,8 +286,8 @@ def run(args: argparse.Namespace):
     for layer in target_layers:
         Y_ln = apply_simulated_ln(target_chunks[layer])
         # Y 全局列中心化
-        Y_final = Y_ln - Y_ln.mean(dim=0, keepdim=True)
-
+        # Y_final = Y_ln - Y_ln.mean(dim=0, keepdim=True)
+        Y_final = Y_ln
         # 计算相关矩阵 C (使用 float32 保证 SVD 精度)
         C = X_final.t().matmul(Y_final).to(torch.float32)
         

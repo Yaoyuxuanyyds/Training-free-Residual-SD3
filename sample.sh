@@ -12,7 +12,7 @@ IMGSIZE=1024
 BATCHSIZE=1
 
 
-SAVEDIR="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/generate/test1"
+SAVEDIR="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/generate/test2"
 
 
 ### -----------------------------
@@ -62,7 +62,7 @@ python sample.py \
     --save_name $SAVENAME \
     --prompt "$PROMPT" \
     --timestep_residual_weight_fn "exp" \
-    --timestep_residual_weight_exp_alpha 3.0 \
+    --timestep_residual_weight_exp_alpha 2.0 \
     --residual_target_layers $RES_TARGET \
     --residual_origin_layer $RES_ORIGIN \
     --residual_weights $RES_WEIGHT \
