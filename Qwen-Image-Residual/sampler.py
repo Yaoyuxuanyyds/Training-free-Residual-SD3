@@ -26,6 +26,51 @@ class QwenImagePipelineOutput(BaseOutput):
     images: Union[List[PIL.Image.Image], np.ndarray]
 
 
+def build_timestep_residual_weight_fn(
+    name: Optional[str] = "constant",
+    power: float = 1.0,
+    exp_alpha: float = 1.5,
+) -> Optional[Callable[[torch.Tensor, int], torch.Tensor]]:
+    if name is None:
+        return None
+
+    name = name.lower()
+
+    def _apply_power(weight: torch.Tensor) -> torch.Tensor:
+        if power != 1.0:
+            return weight ** power
+        return weight
+
+    def constant(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
+        weight = torch.ones_like(timestep, dtype=torch.float32)
+        return _apply_power(weight)
+
+    def linear(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
+        weight = timestep.float() / float(num_train_timesteps)
+        weight = weight.clamp(0.0, 1.0)
+        return _apply_power(weight)
+
+    def cosine(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
+        weight = 0.5 * (1.0 + torch.cos(torch.pi * (1 - timestep.float() / float(num_train_timesteps))))
+        return _apply_power(weight.clamp(0.0, 1.0))
+
+    def exponential(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
+        s = timestep.float() / float(num_train_timesteps)
+        weight = torch.exp(-exp_alpha * s)
+        return _apply_power(weight)
+
+    if name == "constant":
+        return constant
+    if name == "linear":
+        return linear
+    if name == "cosine":
+        return cosine
+    if name in ("exp", "exponential"):
+        return exponential
+
+    raise ValueError(f"Unsupported timestep residual weight fn: {name}")
+
+
 def calculate_shift(
     image_seq_len,
     base_seq_len: int = 256,
@@ -112,6 +157,10 @@ class MyQwenImagePipeline(QwenImagePipeline):
         residual_origin_layer=None,
         residual_target_layers=None,
         residual_weights=None,
+        residual_use_layernorm: bool = True,
+        residual_stop_grad: bool = True,
+        residual_rotation_matrices=None,
+        residual_timestep_weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]] = None,
         **kwargs,
     ):
         # 先加载官方 pipeline
@@ -146,20 +195,92 @@ class MyQwenImagePipeline(QwenImagePipeline):
             residual_origin_layer,
             residual_target_layers,
             residual_weights,
+            residual_use_layernorm=residual_use_layernorm,
+            residual_stop_grad=residual_stop_grad,
+            residual_rotation_matrices=residual_rotation_matrices,
         )
 
-
         # 构建新的 pipeline
-        return cls(
+        pipe = cls(
             scheduler=base_pipe.scheduler,
             vae=base_pipe.vae,
             text_encoder=base_pipe.text_encoder,
             tokenizer=base_pipe.tokenizer,
             transformer=my_transformer,
         )
-            
-            
-            
+        pipe._residual_origin_layer = residual_origin_layer
+        pipe._residual_target_layers = residual_target_layers
+        pipe._residual_base_weights = residual_weights
+        pipe._residual_use_layernorm = residual_use_layernorm
+        pipe._residual_stop_grad = residual_stop_grad
+        pipe._residual_rotation_matrices = residual_rotation_matrices
+        pipe._residual_timestep_weight_fn = residual_timestep_weight_fn
+        return pipe
+
+    @staticmethod
+    def _resolve_timestep_residual_weight(
+        timestep: torch.Tensor,
+        num_train_timesteps: int,
+        weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]],
+    ) -> Optional[torch.Tensor]:
+        if weight_fn is None:
+            return None
+        try:
+            weight = weight_fn(timestep, num_train_timesteps)
+        except TypeError:
+            weight = weight_fn(timestep)
+
+        if not torch.is_tensor(weight):
+            weight = torch.tensor(weight, device=timestep.device, dtype=timestep.dtype)
+        else:
+            weight = weight.to(device=timestep.device, dtype=timestep.dtype)
+
+        if weight.numel() > 1:
+            weight = weight.reshape(-1)[0]
+        return weight
+
+    @staticmethod
+    def _scale_residual_weights(
+        residual_weights: Optional[List[float]],
+        timestep_weight: Optional[torch.Tensor],
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[torch.Tensor]:
+        if residual_weights is None:
+            return None
+        if timestep_weight is None:
+            if isinstance(residual_weights, torch.Tensor):
+                return residual_weights.to(device=device, dtype=dtype)
+            return torch.tensor(residual_weights, device=device, dtype=dtype)
+
+        if isinstance(residual_weights, torch.Tensor):
+            weights = residual_weights.to(device=device, dtype=dtype)
+        else:
+            weights = torch.tensor(residual_weights, device=device, dtype=dtype)
+        return weights * timestep_weight
+
+    def _update_residual_weights_for_timestep(self, timestep: torch.Tensor, dtype: torch.dtype) -> None:
+        if (
+            self._residual_base_weights is None
+            or self._residual_origin_layer is None
+            or not self._residual_target_layers
+        ):
+            return
+        timestep_weight = self._resolve_timestep_residual_weight(
+            timestep,
+            int(self.scheduler.config.num_train_timesteps),
+            self._residual_timestep_weight_fn,
+        )
+        effective_residual_weights = self._scale_residual_weights(
+            self._residual_base_weights,
+            timestep_weight,
+            device=timestep.device,
+            dtype=dtype,
+        )
+        self.transformer.set_residual_weights(effective_residual_weights)
+
+
+
 
     @torch.no_grad()
     def __call__(
@@ -186,7 +307,7 @@ class MyQwenImagePipeline(QwenImagePipeline):
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
         collect_layers=None,
-        target_timestep=None
+        target_timestep=None,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -391,6 +512,7 @@ class MyQwenImagePipeline(QwenImagePipeline):
                 self._current_timestep = t
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
+                self._update_residual_weights_for_timestep(timestep, prompt_embeds.dtype)
                 
                 if i == target_timestep and collect:
                     with self.transformer.cache_context("cond"):
@@ -666,6 +788,7 @@ class MyQwenImagePipeline(QwenImagePipeline):
             for i, t in enumerate(timesteps):
                 self._current_timestep = t
                 ts = t.expand(latents.shape[0]).to(latents.dtype)
+                self._update_residual_weights_for_timestep(ts, prompt_embeds.dtype)
 
 
 

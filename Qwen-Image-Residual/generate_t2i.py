@@ -8,7 +8,8 @@ from PIL import Image
 from tqdm import tqdm
 from torchvision.utils import save_image
 
-from sampler import MyQwenImagePipeline
+from sampler import MyQwenImagePipeline, build_timestep_residual_weight_fn
+from util import load_residual_procrustes, select_residual_rotations
 
 torch.set_grad_enabled(False)
 import random
@@ -35,6 +36,10 @@ class QwenImageGenerator:
         residual_target_layers=None,
         residual_origin_layer=None,
         residual_weights=None,
+        residual_rotation_matrices=None,
+        residual_timestep_weight_fn=None,
+        residual_use_layernorm=True,
+        residual_stop_grad=True,
         cfg=4.0,
         steps=50,
         width=1024,
@@ -48,6 +53,10 @@ class QwenImageGenerator:
             residual_origin_layer=residual_origin_layer,
             residual_target_layers=residual_target_layers,
             residual_weights=residual_weights,
+            residual_rotation_matrices=residual_rotation_matrices,
+            residual_timestep_weight_fn=residual_timestep_weight_fn,
+            residual_use_layernorm=residual_use_layernorm,
+            residual_stop_grad=residual_stop_grad,
         ).to(self.device)
 
         self.pipe.set_progress_bar_config(disable=True)
@@ -115,6 +124,27 @@ def parse_args():
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
+    parser.add_argument("--residual_use_layernorm", type=int, default=1)
+    parser.add_argument("--residual_stop_grad", type=int, default=1)
+    parser.add_argument("--residual_procrustes_path", type=str, default=None)
+    parser.add_argument(
+        "--timestep_residual_weight_fn",
+        type=str,
+        default=None,
+        help="Mapping from timestep (0-1000) to residual weight multiplier.",
+    )
+    parser.add_argument(
+        "--timestep_residual_weight_power",
+        type=float,
+        default=1.0,
+        help="Optional power for timestep residual weight mapping.",
+    )
+    parser.add_argument(
+        "--timestep_residual_weight_exp_alpha",
+        type=float,
+        default=1.5,
+        help="Exponent alpha for exponential timestep residual weight mapping.",
+    )
 
     # 多卡
     parser.add_argument("--world_size", type=int, default=1)
@@ -136,11 +166,32 @@ def main(opt):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[Rank {opt.rank}] Device={device}, world_size={opt.world_size}")
 
+    residual_rotation_matrices = None
+    if opt.residual_procrustes_path is not None:
+        residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
+            opt.residual_procrustes_path
+        )
+        residual_rotation_matrices, opt.residual_target_layers = select_residual_rotations(
+            residual_rotation_matrices, target_layers, opt.residual_target_layers
+        )
+        if opt.residual_origin_layer is None and isinstance(meta, dict):
+            opt.residual_origin_layer = meta.get("origin_layer")
+
+    residual_timestep_weight_fn = build_timestep_residual_weight_fn(
+        opt.timestep_residual_weight_fn,
+        power=opt.timestep_residual_weight_power,
+        exp_alpha=opt.timestep_residual_weight_exp_alpha,
+    )
+
     generator = QwenImageGenerator(
         model_dir=opt.model_dir,
         residual_target_layers=opt.residual_target_layers,
         residual_origin_layer=opt.residual_origin_layer,
         residual_weights=opt.residual_weights,
+        residual_rotation_matrices=residual_rotation_matrices,
+        residual_timestep_weight_fn=residual_timestep_weight_fn,
+        residual_use_layernorm=bool(opt.residual_use_layernorm),
+        residual_stop_grad=bool(opt.residual_stop_grad),
         cfg=opt.cfg,
         steps=opt.steps,
         width=opt.width,
