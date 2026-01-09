@@ -162,6 +162,9 @@ if __name__ == '__main__':
 
     if args.residual_weights is None and args.residual_weights_path is not None:
         args.residual_weights = load_residual_weights(args.residual_weights_path)
+        print(f"Residual weights: {args.residual_weights}")
+        print(f"Num res weights: {len(args.residual_weights)}")
+        print(f"Num res targets: {len(args.residual_target_layers)}")
 
     # sample set
     if args.dataset is not None:
