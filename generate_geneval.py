@@ -11,7 +11,7 @@ from einops import rearrange
 from torchvision.utils import save_image
 
 from sampler import SD3Euler, build_timestep_residual_weight_fn
-from util import load_residual_procrustes, select_residual_rotations, set_seed
+from util import load_residual_procrustes, select_residual_rotations, set_seed, load_residual_weights
 from lora_utils import *
 
 torch.set_grad_enabled(False)
@@ -115,6 +115,7 @@ def parse_args():
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
+    parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
     parser.add_argument(
         "--timestep_residual_weight_fn",
@@ -184,6 +185,9 @@ def main(args):
         )
         if args.residual_origin_layer is None and isinstance(meta, dict):
             args.residual_origin_layer = meta.get("origin_layer")
+
+    if args.residual_weights is None and args.residual_weights_path is not None:
+        args.residual_weights = load_residual_weights(args.residual_weights_path)
 
     generator = SD3ImageGenerator(
         model='sd3',
