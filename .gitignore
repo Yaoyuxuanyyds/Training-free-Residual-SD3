@@ -11,3 +11,5 @@ __pycache__
 *.DS_Store
 *.yaml
 *all*
+Qwen-Image-Residual/logs
+Qwen-Image-Residual/output

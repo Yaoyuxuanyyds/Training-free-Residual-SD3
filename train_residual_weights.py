@@ -188,7 +188,7 @@ def train(args):
 
     residual_target_layers = args.residual_target_layers
     if residual_target_layers is None:
-        residual_target_layers = list(range(residual_origin_layer + 1, num_layers))
+        residual_target_layers = list(range(residual_origin_layer + 1, num_layers-1))
 
     if len(residual_target_layers) == 0:
         raise ValueError("residual_target_layers cannot be empty.")
@@ -332,7 +332,11 @@ def train(args):
             writer.add_scalar("train/weights_mean", w_mean, step)
             writer.add_scalar("train/weights_min", w_min, step)
             writer.add_scalar("train/weights_max", w_max, step)
-
+            writer.add_histogram(
+                "train/residual_weights",
+                residual_weights.detach().cpu(),
+                step
+            )
             if args.save_interval > 0 and step % args.save_interval == 0:
                 save_residual_weights(step)
 
@@ -344,7 +348,7 @@ def train(args):
                 sample_cfg = {
                     "NFE": 28,
                     "img_shape": (1024, 1024),
-                    "cfg_scale": 4,
+                    "cfg_scale": 7,
                     "residual_target_layers": residual_target_layers,
                     "residual_origin_layer": residual_origin_layer,
                     "residual_weights": residual_weights.detach(),
