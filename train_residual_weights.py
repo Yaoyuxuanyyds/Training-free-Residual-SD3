@@ -346,6 +346,7 @@ def train(args):
             step
         )
         if args.save_interval > 0 and step % args.save_interval == 0:
+            print(f"Residual weights at step-{step}: {residual_weights.detach().cpu()}")
             save_residual_weights(step)
 
         if args.eval_interval > 0 and step % args.eval_interval == 0:
@@ -403,7 +404,7 @@ def main():
     parser.add_argument(
         "--steps",
         type=int,
-        default=None,
+        default=1000,
         help="训练总步数（不指定则使用 epochs * len(dataloader)）",
     )
     parser.add_argument("--batch_size", type=int, default=4)

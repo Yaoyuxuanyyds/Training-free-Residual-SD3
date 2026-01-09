@@ -25,7 +25,7 @@ python train_residual_weights.py \
   --logdir "${LOGDIR}" \
   --dataset "${DATASET}" \
   --img_size 512 \
-  --epochs 1 \
+  --steps 2000 \
   --batch_size 64 \
   --lr 1e-3 \
   --wd 0.0 \
