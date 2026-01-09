@@ -239,7 +239,9 @@ def train(args):
     )
     scaler = GradScaler(enabled=(args.dtype == "float16" and device == "cuda"))
 
-    num_training_steps = args.epochs * len(loader)
+    if args.steps is None:
+        args.steps = args.epochs * len(loader)
+    num_training_steps = args.steps
 
     def lr_lambda(current_step: int):
         warmup_steps = int(args.warmup_steps)
@@ -262,106 +264,113 @@ def train(args):
         torch.save(payload, osp.join(log_dir, filename))
 
     step = 0
-    for epoch in range(args.epochs):
-        pbar = tqdm.tqdm(loader, desc=f"Epoch {epoch}")
-        for batch in pbar:
-            step += 1
+    pbar = tqdm.tqdm(total=args.steps, desc="Training")
+    data_iter = iter(loader)
+    while step < args.steps:
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            data_iter = iter(loader)
+            batch = next(data_iter)
+        step += 1
 
-            prompt_emb = batch["prompt_emb"].to(device)
-            pooled_emb = batch["pooled_emb"].to(device)
-            x0 = batch["x0"].to(device)
+        prompt_emb = batch["prompt_emb"].to(device)
+        pooled_emb = batch["pooled_emb"].to(device)
+        x0 = batch["x0"].to(device)
 
-            if args.dtype == "float32":
-                prompt_emb = prompt_emb.float()
-                pooled_emb = pooled_emb.float()
-                x0 = x0.float()
+        if args.dtype == "float32":
+            prompt_emb = prompt_emb.float()
+            pooled_emb = pooled_emb.float()
+            x0 = x0.float()
 
-            num_steps = sampler_model.scheduler.config.num_train_timesteps
-            t = sample_timesteps(
-                x0.shape[0],
-                num_steps,
-                device,
-                mode=args.time_mode,
-                mu=args.time_shift,
-                sigma=1.0,
+        num_steps = sampler_model.scheduler.config.num_train_timesteps
+        t = sample_timesteps(
+            x0.shape[0],
+            num_steps,
+            device,
+            mode=args.time_mode,
+            mu=args.time_shift,
+            sigma=1.0,
+        )
+
+        optimizer.zero_grad(set_to_none=True)
+
+        denoise_loss = compute_total_loss(
+            denoiser=denoiser,
+            scheduler=sampler_model.scheduler,
+            x0=x0,
+            t=t,
+            prompt_emb=prompt_emb,
+            pooled_emb=pooled_emb,
+            residual_target_layers=residual_target_layers,
+            residual_origin_layer=residual_origin_layer,
+            residual_weights=residual_weights,
+            residual_use_layernorm=args.residual_use_layernorm,
+            residual_rotation_matrices=residual_rotation_matrices,
+        )
+
+        if scaler.is_enabled():
+            scaler.scale(denoise_loss).backward()
+            scaler.unscale_(optimizer)
+        else:
+            denoise_loss.backward()
+
+        if args.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_([residual_weights], args.grad_clip)
+
+        if scaler.is_enabled():
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
+        scheduler.step()
+
+        w_min = residual_weights.min().item()
+        w_max = residual_weights.max().item()
+        w_mean = residual_weights.mean().item()
+
+        pbar.set_description(
+            f"Step {step} | "
+            f"Denoise {denoise_loss.item():.4f} | "
+            f"w_mean {w_mean:.4f} | w_min {w_min:.4f} | w_max {w_max:.4f}"
+        )
+        pbar.update(1)
+
+        writer.add_scalar("train/denoise_loss", denoise_loss.item(), step)
+        writer.add_scalar("train/weights_mean", w_mean, step)
+        writer.add_scalar("train/weights_min", w_min, step)
+        writer.add_scalar("train/weights_max", w_max, step)
+        writer.add_histogram(
+            "train/residual_weights",
+            residual_weights.detach().cpu(),
+            step
+        )
+        if args.save_interval > 0 and step % args.save_interval == 0:
+            save_residual_weights(step)
+
+        if args.eval_interval > 0 and step % args.eval_interval == 0:
+            eval_dir = osp.join(log_dir, f"val_{step}")
+            os.makedirs(eval_dir, exist_ok=True)
+
+            _wrap = type("Wrap", (), {"sampler": sampler_model})()
+            sample_cfg = {
+                "NFE": 28,
+                "img_shape": (1024, 1024),
+                "cfg_scale": 7,
+                "residual_target_layers": residual_target_layers,
+                "residual_origin_layer": residual_origin_layer,
+                "residual_weights": residual_weights.detach(),
+                "residual_use_layernorm": args.residual_use_layernorm,
+                "residual_rotation_matrices": residual_rotation_matrices,
+            }
+            eval_model(
+                args,
+                model=_wrap,
+                target_dataset=val_set,
+                eval_run_folder=eval_dir,
+                sample_cfg=sample_cfg,
             )
-
-            optimizer.zero_grad(set_to_none=True)
-
-            denoise_loss = compute_total_loss(
-                denoiser=denoiser,
-                scheduler=sampler_model.scheduler,
-                x0=x0,
-                t=t,
-                prompt_emb=prompt_emb,
-                pooled_emb=pooled_emb,
-                residual_target_layers=residual_target_layers,
-                residual_origin_layer=residual_origin_layer,
-                residual_weights=residual_weights,
-                residual_use_layernorm=args.residual_use_layernorm,
-                residual_rotation_matrices=residual_rotation_matrices,
-            )
-
-            if scaler.is_enabled():
-                scaler.scale(denoise_loss).backward()
-                scaler.unscale_(optimizer)
-            else:
-                denoise_loss.backward()
-
-            if args.grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_([residual_weights], args.grad_clip)
-
-            if scaler.is_enabled():
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                optimizer.step()
-            scheduler.step()
-
-            w_min = residual_weights.min().item()
-            w_max = residual_weights.max().item()
-            w_mean = residual_weights.mean().item()
-
-            pbar.set_description(
-                f"Epoch {epoch} | Step {step} | "
-                f"Denoise {denoise_loss.item():.4f} | "
-                f"w_mean {w_mean:.4f} | w_min {w_min:.4f} | w_max {w_max:.4f}"
-            )
-
-            writer.add_scalar("train/denoise_loss", denoise_loss.item(), step)
-            writer.add_scalar("train/weights_mean", w_mean, step)
-            writer.add_scalar("train/weights_min", w_min, step)
-            writer.add_scalar("train/weights_max", w_max, step)
-            writer.add_histogram(
-                "train/residual_weights",
-                residual_weights.detach().cpu(),
-                step
-            )
-            if args.save_interval > 0 and step % args.save_interval == 0:
-                save_residual_weights(step)
-
-            if args.eval_interval > 0 and step % args.eval_interval == 0:
-                eval_dir = osp.join(log_dir, f"val_{step}")
-                os.makedirs(eval_dir, exist_ok=True)
-
-                _wrap = type("Wrap", (), {"sampler": sampler_model})()
-                sample_cfg = {
-                    "NFE": 28,
-                    "img_shape": (1024, 1024),
-                    "cfg_scale": 7,
-                    "residual_target_layers": residual_target_layers,
-                    "residual_origin_layer": residual_origin_layer,
-                    "residual_weights": residual_weights.detach(),
-                    "residual_use_layernorm": args.residual_use_layernorm,
-                    "residual_rotation_matrices": residual_rotation_matrices,
-                }
-                eval_model(
-                    args,
-                    model=_wrap,
-                    target_dataset=val_set,
-                    eval_run_folder=eval_dir,
-                    sample_cfg=sample_cfg,
-                )
+    pbar.close()
 
     save_residual_weights(step, suffix="_final")
     writer.close()
@@ -391,6 +400,12 @@ def main():
     parser.add_argument("--time_shift", type=float, default=0.0)
 
     parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=None,
+        help="训练总步数（不指定则使用 epochs * len(dataloader)）",
+    )
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--wd", type=float, default=0.0)
