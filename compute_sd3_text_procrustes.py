@@ -278,7 +278,8 @@ def run(args: argparse.Namespace):
     # 得到模拟推理分布后的 X
     X_ln = apply_simulated_ln(origin_chunks)
     # X 全局列中心化
-    X_final = X_ln - X_ln.mean(dim=0, keepdim=True)
+    # X_final = X_ln - X_ln.mean(dim=0, keepdim=True)
+    X_final = X_ln
 
     rotations: List[torch.Tensor] = []
 

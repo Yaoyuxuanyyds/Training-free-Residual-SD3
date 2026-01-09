@@ -13,7 +13,7 @@ from PIL import Image
 from torch.utils.data import ConcatDataset, Subset
 from tqdm import tqdm
 
-from dataset.datasets import get_target_dataset
+from datasets import get_target_dataset
 from sampler import MyQwenImagePipeline, calculate_shift, retrieve_timesteps
 
 
@@ -250,7 +250,8 @@ def run(args: argparse.Namespace):
     rotations: List[torch.Tensor] = []
     for layer in target_layers:
         Y_ln = apply_simulated_ln(target_chunks[layer])
-        Y_final = Y_ln
+        Y_final = Y_ln - Y_ln.mean(dim=0, keepdim=True)
+        
         C = X_final.t().matmul(Y_final).to(torch.float32)
         U, _, Vh = torch.linalg.svd(C, full_matrices=False)
         R = U.matmul(Vh)
@@ -277,16 +278,16 @@ def run(args: argparse.Namespace):
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, required=True)
-    parser.add_argument("--output", type=str, default="procrustes_rotations.pt")
+    parser.add_argument("--model", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/base_models/Diffusion/Qwen-Image")
+    parser.add_argument("--output", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/Qwen-Image-Residual/output/procrustes_rotations/qwen_procrustes_rotations.pt")
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--precision", type=str, default="auto")
+    parser.add_argument("--precision", type=str, default="bf16")
     parser.add_argument("--seed", type=int, default=0)
 
-    parser.add_argument("--dataset", type=str, nargs="*", default=None)
-    parser.add_argument("--datadir", type=str, default=None)
+    parser.add_argument("--dataset", type=str, nargs="*", default=["blip3o60k"])
+    parser.add_argument("--datadir", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/datasets")
     parser.add_argument("--dataset_train", action="store_true")
-    parser.add_argument("--num_samples", type=int, default=0)
+    parser.add_argument("--num_samples", type=int, default=5000)
     parser.add_argument("--image", type=str, default=None)
     parser.add_argument("--prompt", type=str, default=None)
 
@@ -295,9 +296,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_sequence_length", type=int, default=512)
     parser.add_argument("--num_inference_steps", type=int, default=50)
 
-    parser.add_argument("--origin_layer", type=int, default=0)
+    parser.add_argument("--origin_layer", type=int, default=1)
     parser.add_argument("--target_layers", type=int, nargs="*", default=None)
-    parser.add_argument("--target_layer_start", type=int, default=0)
+    parser.add_argument("--target_layer_start", type=int, default=2)
 
     return parser
 

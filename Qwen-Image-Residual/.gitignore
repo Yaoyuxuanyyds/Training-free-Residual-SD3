@@ -2,3 +2,5 @@ output
 _pycache_
 log
 scripts
+Qwen-Image-Residual/logs
+Qwen-Image-Residual/output
