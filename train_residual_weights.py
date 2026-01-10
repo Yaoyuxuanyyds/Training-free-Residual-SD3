@@ -198,13 +198,13 @@ def train(args):
             "residual_target_layers must be strictly greater than residual_origin_layer."
         )
 
-    residual_weights = torch.nn.Parameter(
-        torch.full(
-            (len(residual_target_layers),),
-            args.residual_init,
-            device=device,
-            dtype=torch.float32,
-        )
+    def softplus_inverse(x: torch.Tensor) -> torch.Tensor:
+        return torch.where(x > 20, x, torch.log(torch.expm1(x)))
+
+    residual_init = torch.tensor(args.residual_init, device=device, dtype=torch.float32)
+    residual_init = torch.clamp(residual_init, min=1e-6)
+    residual_weights_raw = torch.nn.Parameter(
+        softplus_inverse(residual_init).repeat(len(residual_target_layers))
     )
 
     if args.residual_weights_ckpt is not None:
@@ -213,13 +213,14 @@ def train(args):
             loaded = data["residual_weights"]
         else:
             loaded = data
-        loaded = torch.tensor(loaded, dtype=residual_weights.dtype)
-        if loaded.numel() != residual_weights.numel():
+        loaded = torch.tensor(loaded, dtype=residual_weights_raw.dtype)
+        if loaded.numel() != residual_weights_raw.numel():
             raise ValueError(
                 "residual_weights_ckpt length mismatch: "
-                f"expected {residual_weights.numel()}, got {loaded.numel()}"
+                f"expected {residual_weights_raw.numel()}, got {loaded.numel()}"
             )
-        residual_weights.data.copy_(loaded.to(device=device))
+        loaded = torch.clamp(loaded.to(device=device), min=1e-6)
+        residual_weights_raw.data.copy_(softplus_inverse(loaded))
         print(f"[INFO] Loaded residual weights from {args.residual_weights_ckpt}")
 
     residual_rotation_matrices = None
@@ -235,7 +236,7 @@ def train(args):
         residual_rotation_matrices = rotations
 
     optimizer = torch.optim.AdamW(
-        [{"params": [residual_weights], "lr": args.lr, "weight_decay": args.wd}]
+        [{"params": [residual_weights_raw], "lr": args.lr, "weight_decay": args.wd}]
     )
     scaler = GradScaler(enabled=(args.dtype == "float16" and device == "cuda"))
 
@@ -255,6 +256,7 @@ def train(args):
     scheduler = LambdaLR(optimizer, lr_lambda)
 
     def save_residual_weights(step: int, suffix: str = ""):
+        residual_weights = F.softplus(residual_weights_raw)
         payload = {
             "residual_weights": residual_weights.detach().cpu(),
             "origin_layer": residual_origin_layer,
@@ -295,6 +297,8 @@ def train(args):
 
         optimizer.zero_grad(set_to_none=True)
 
+        residual_weights = F.softplus(residual_weights_raw)
+
         denoise_loss = compute_total_loss(
             denoiser=denoiser,
             scheduler=sampler_model.scheduler,
@@ -316,7 +320,7 @@ def train(args):
             denoise_loss.backward()
 
         if args.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_([residual_weights], args.grad_clip)
+            torch.nn.utils.clip_grad_norm_([residual_weights_raw], args.grad_clip)
 
         if scaler.is_enabled():
             scaler.step(optimizer)
