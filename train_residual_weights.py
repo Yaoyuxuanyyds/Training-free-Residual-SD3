@@ -139,7 +139,7 @@ def train(args):
     print(f"[INFO] Use device={device}, GPUs={n_gpus}")
     set_seed(args.seed)
 
-    log_dir = osp.join(args.logdir, f"{args.model}_residual_weights_lr-{args.lr}_bs-{args.batch_size}_init-{args.residual_init}_steps-{args.steps}")
+    log_dir = osp.join(args.logdir, f"{args.model}_residual_weights_lr-{args.lr}_bs-{args.batch_size}_init-{args.init_mode}{args.residual_init}_steps-{args.steps}")
     os.makedirs(log_dir, exist_ok=True)
 
     tb_dir = osp.join(log_dir, "tb")
@@ -164,8 +164,9 @@ def train(args):
         dataset,
         batch_size=1,
         shuffle=True,
-        num_workers=32,
+        num_workers=16,
         pin_memory=False,
+        persistent_workers=True,
         collate_fn=collate_fn_packed,
     )
 
@@ -202,11 +203,29 @@ def train(args):
         return torch.where(x > 20, x, torch.log(torch.expm1(x)))
 
     residual_init = torch.tensor(args.residual_init, device=device, dtype=torch.float32)
-    residual_init = torch.clamp(residual_init, min=1e-6)
-    residual_weights_raw = torch.nn.Parameter(
-        softplus_inverse(residual_init).repeat(len(residual_target_layers))
-    )
-
+    
+    if args.init_mode == "constant":
+        residual_init = torch.clamp(residual_init, min=1e-6)
+        residual_weights_raw = torch.nn.Parameter(
+            softplus_inverse(residual_init).repeat(len(residual_target_layers))
+        )
+    elif args.init_mode == "linear":
+        num_targets = len(residual_target_layers)
+        if num_targets == 1:
+            residual_init_values = residual_init.repeat(1)
+        else:
+            residual_init_values = torch.linspace(
+                residual_init,
+                0.0,
+                steps=num_targets,
+                device=device,
+                dtype=torch.float32,
+            )
+        residual_init_values = torch.clamp(residual_init_values, min=1e-6)
+        residual_weights_raw = torch.nn.Parameter(softplus_inverse(residual_init_values))
+    else:
+        raise ValueError(f"Not support init mode:{args.init_mode}")
+    
     if args.residual_weights_ckpt is not None:
         data = torch.load(args.residual_weights_ckpt, map_location="cpu")
         if isinstance(data, dict) and "residual_weights" in data:
@@ -423,11 +442,12 @@ def main():
     parser.add_argument("--grad_clip", type=float, default=1.0)
 
     parser.add_argument("--logdir", type=str, default="./logs")
-    parser.add_argument("--num_eval", type=int, default=50)
+    parser.add_argument("--num_eval", type=int, default=20)
 
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_init", type=float, default=0.0)
+    parser.add_argument("--init_mode", type=str, default="constant")
     parser.add_argument("--residual_weights_ckpt", type=str, default=None)
     parser.add_argument("--residual_use_layernorm", type=int, default=1)
     parser.add_argument("--residual_rotation_path", type=str, default=None)

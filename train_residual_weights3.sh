@@ -29,8 +29,8 @@ python train_residual_weights.py \
   --dataset "${DATASET}" \
   --img_size 512 \
   --steps 5000 \
-  --batch_size 64 \
-  --lr 1e-3 \
+  --batch_size 16 \
+  --lr 1e-2 \
   --wd 0.0 \
   --dtype float16 \
   --time_mode logitnorm \

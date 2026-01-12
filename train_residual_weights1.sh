@@ -29,7 +29,7 @@ python train_residual_weights.py \
   --dataset "${DATASET}" \
   --img_size 512 \
   --steps 5000 \
-  --batch_size 64 \
+  --batch_size 16 \
   --lr 1e-3 \
   --wd 0.0 \
   --dtype float16 \

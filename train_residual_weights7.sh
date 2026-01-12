@@ -30,7 +30,7 @@ python train_residual_weights.py \
   --img_size 512 \
   --steps 5000 \
   --batch_size 64 \
-  --lr 1e-3 \
+  --lr 1e-2 \
   --wd 0.0 \
   --dtype float16 \
   --time_mode logitnorm \
@@ -41,5 +41,6 @@ python train_residual_weights.py \
   --grad_clip 1.0 \
   --residual_origin_layer 1 \
   --residual_init 0.25 \
+  --init_mode "constant" \
   --residual_use_layernorm 1 \
   --residual_rotation_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln.pt \
