@@ -227,11 +227,11 @@ class CachedFeatureDataset(Dataset):
         for k, v in data.items():
             if torch.is_tensor(v):
                 v = v.detach().requires_grad_(False)
-                if k == "txt_hidden_states":
-                    if v.dim() == 4:
-                        v = v[:, self.ar_target_layer, :, :]  # (B, N, D)
-                    elif v.dim() == 3:
-                        v = v[self.ar_target_layer]           # (N, D)
+                # if k == "txt_hidden_states":
+                #     if v.dim() == 4:
+                #         v = v[:, self.ar_target_layer, :, :]  # (B, N, D)
+                #     elif v.dim() == 3:
+                #         v = v[self.ar_target_layer]           # (N, D)
                 out[k] = v
             else:
                 out[k] = v
