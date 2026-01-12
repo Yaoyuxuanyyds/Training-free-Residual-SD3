@@ -202,10 +202,19 @@ def train(args):
         return torch.where(x > 20, x, torch.log(torch.expm1(x)))
 
     residual_init = torch.tensor(args.residual_init, device=device, dtype=torch.float32)
-    residual_init = torch.clamp(residual_init, min=1e-6)
-    residual_weights_raw = torch.nn.Parameter(
-        softplus_inverse(residual_init).repeat(len(residual_target_layers))
-    )
+    num_targets = len(residual_target_layers)
+    if num_targets == 1:
+        residual_init_values = residual_init.repeat(1)
+    else:
+        residual_init_values = torch.linspace(
+            residual_init,
+            0.0,
+            steps=num_targets,
+            device=device,
+            dtype=torch.float32,
+        )
+    residual_init_values = torch.clamp(residual_init_values, min=1e-6)
+    residual_weights_raw = torch.nn.Parameter(softplus_inverse(residual_init_values))
 
     if args.residual_weights_ckpt is not None:
         data = torch.load(args.residual_weights_ckpt, map_location="cpu")
