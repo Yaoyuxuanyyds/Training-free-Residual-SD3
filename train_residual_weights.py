@@ -154,7 +154,8 @@ def train(args):
     print(f"[INFO] Use device={device}, GPUs={n_gpus}, distributed={distributed}")
     set_seed(args.seed + rank)
 
-    log_dir = osp.join(args.logdir, f"{args.model}_residual_weights_lr-{args.lr}_bs-{args.batch_size}_init-{args.init_mode}{args.residual_init}_steps-{args.steps}")
+    global_bs = args.batch_size * world_size
+    log_dir = osp.join(args.logdir, f"{args.model}_residual_weights_lr-{args.lr}_bs-{global_bs}_init-{args.init_mode}{args.residual_init}_steps-{args.steps}")
     os.makedirs(log_dir, exist_ok=True)
 
     tb_dir = osp.join(log_dir, "tb")

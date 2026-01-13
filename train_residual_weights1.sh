@@ -7,7 +7,7 @@ conda activate repa-sd3
 cd /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3
 
 
-
+export CUDA_VISIBLE_DEVICES=4,5,6,7
 
 MODEL_KEY="/inspire/hdd/project/chineseculture/public/yuxuan/base_models/Diffusion/sd3"
 DATASET="blip3o60k"
@@ -21,7 +21,9 @@ CACHE_DIRS=(
 
 LOGDIR="./logs/learnable_residual"
 
-python train_residual_weights.py \
+torchrun \
+  --nproc_per_node=4 \
+  train_residual_weights.py \
   --model_key "${MODEL_KEY}" \
   --datadir "${DATADIR}" \
   --precompute_dir "${CACHE_DIRS[@]}" \
@@ -40,7 +42,7 @@ python train_residual_weights.py \
   --save_interval 500 \
   --grad_clip 1.0 \
   --residual_origin_layer 1 \
-  --residual_init 0.025 \
+  --residual_init 0.05 \
   --init_mode "constant" \
   --residual_use_layernorm 1 \
   --residual_rotation_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln.pt \
