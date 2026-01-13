@@ -7,6 +7,7 @@ from typing import List, Optional
 import torch
 import torch.nn.functional as F
 from torch.cuda.amp import GradScaler, autocast
+import torch.distributed as dist
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -134,20 +135,34 @@ def compute_total_loss(
 # =========================
 
 def train(args):
+    distributed = dist.is_available() and "WORLD_SIZE" in os.environ
+    if distributed:
+        world_size = int(os.environ["WORLD_SIZE"])
+        rank = int(os.environ.get("RANK", 0))
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend="nccl" if torch.cuda.is_available() else "gloo")
+    else:
+        world_size = 1
+        rank = 0
+        local_rank = 0
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     n_gpus = torch.cuda.device_count()
-    print(f"[INFO] Use device={device}, GPUs={n_gpus}")
-    set_seed(args.seed)
+    print(f"[INFO] Use device={device}, GPUs={n_gpus}, distributed={distributed}")
+    set_seed(args.seed + rank)
 
     log_dir = osp.join(args.logdir, f"{args.model}_residual_weights_lr-{args.lr}_bs-{args.batch_size}_init-{args.init_mode}{args.residual_init}_steps-{args.steps}")
     os.makedirs(log_dir, exist_ok=True)
 
     tb_dir = osp.join(log_dir, "tb")
     os.makedirs(tb_dir, exist_ok=True)
-    writer = SummaryWriter(log_dir=tb_dir)
+    writer = SummaryWriter(log_dir=tb_dir) if rank == 0 else None
 
-    with open(osp.join(log_dir, "config.yaml"), "w") as f:
-        yaml.dump(vars(args), f)
+    if rank == 0:
+        with open(osp.join(log_dir, "config.yaml"), "w") as f:
+            yaml.dump(vars(args), f)
 
     transform = get_transform(args.img_size)
     train_set = get_target_dataset(args.dataset, args.datadir, train=True, transform=transform)
@@ -160,10 +175,20 @@ def train(args):
         cache_meta=True,
     )
 
+    if distributed:
+        sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True
+        )
+        shuffle = False
+    else:
+        sampler = None
+        shuffle = True
+
     loader = DataLoader(
         dataset,
         batch_size=1,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=sampler,
         num_workers=16,
         pin_memory=False,
         persistent_workers=True,
@@ -285,12 +310,16 @@ def train(args):
         torch.save(payload, osp.join(log_dir, filename))
 
     step = 0
-    pbar = tqdm.tqdm(total=args.steps, desc="Training")
+    epoch = 0
+    pbar = tqdm.tqdm(total=args.steps, desc="Training", disable=rank != 0)
     data_iter = iter(loader)
     while step < args.steps:
         try:
             batch = next(data_iter)
         except StopIteration:
+            epoch += 1
+            if sampler is not None:
+                sampler.set_epoch(epoch)
             data_iter = iter(loader)
             batch = next(data_iter)
         step += 1
@@ -341,6 +370,10 @@ def train(args):
         if args.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_([residual_weights_raw], args.grad_clip)
 
+        if distributed and residual_weights_raw.grad is not None:
+            dist.all_reduce(residual_weights_raw.grad, op=dist.ReduceOp.SUM)
+            residual_weights_raw.grad.div_(world_size)
+
         if scaler.is_enabled():
             scaler.step(optimizer)
             scaler.update()
@@ -352,53 +385,66 @@ def train(args):
         w_max = residual_weights.max().item()
         w_mean = residual_weights.mean().item()
 
-        pbar.set_description(
-            f"Step {step} | "
-            f"Denoise {denoise_loss.item():.4f} | "
-            f"w_mean {w_mean:.4f} | w_min {w_min:.4f} | w_max {w_max:.4f}"
-        )
-        pbar.update(1)
+        denoise_loss_value = denoise_loss.detach()
+        if distributed:
+            dist.all_reduce(denoise_loss_value, op=dist.ReduceOp.SUM)
+            denoise_loss_value = denoise_loss_value / world_size
 
-        writer.add_scalar("train/denoise_loss", denoise_loss.item(), step)
-        writer.add_scalar("train/weights_mean", w_mean, step)
-        writer.add_scalar("train/weights_min", w_min, step)
-        writer.add_scalar("train/weights_max", w_max, step)
-        writer.add_histogram(
-            "train/residual_weights",
-            residual_weights.detach().cpu(),
-            step
-        )
+        if rank == 0:
+            pbar.set_description(
+                f"Step {step} | "
+                f"Denoise {denoise_loss_value.item():.4f} | "
+                f"w_mean {w_mean:.4f} | w_min {w_min:.4f} | w_max {w_max:.4f}"
+            )
+            pbar.update(1)
+
+            writer.add_scalar("train/denoise_loss", denoise_loss_value.item(), step)
+            writer.add_scalar("train/weights_mean", w_mean, step)
+            writer.add_scalar("train/weights_min", w_min, step)
+            writer.add_scalar("train/weights_max", w_max, step)
+            writer.add_histogram(
+                "train/residual_weights",
+                residual_weights.detach().cpu(),
+                step,
+            )
         if args.save_interval > 0 and step % args.save_interval == 0:
-            print(f"Residual weights at step-{step}: {residual_weights.detach().cpu()}")
-            save_residual_weights(step)
+            if rank == 0:
+                print(
+                    f"Residual weights at step-{step}: {residual_weights.detach().cpu()}"
+                )
+                save_residual_weights(step)
 
         if args.eval_interval > 0 and step % args.eval_interval == 0:
-            eval_dir = osp.join(log_dir, f"val_{step}")
-            os.makedirs(eval_dir, exist_ok=True)
+            if rank == 0:
+                eval_dir = osp.join(log_dir, f"val_{step}")
+                os.makedirs(eval_dir, exist_ok=True)
 
-            _wrap = type("Wrap", (), {"sampler": sampler_model})()
-            sample_cfg = {
-                "NFE": 28,
-                "img_shape": (1024, 1024),
-                "cfg_scale": 7,
-                "residual_target_layers": residual_target_layers,
-                "residual_origin_layer": residual_origin_layer,
-                "residual_weights": residual_weights.detach(),
-                "residual_use_layernorm": args.residual_use_layernorm,
-                "residual_rotation_matrices": residual_rotation_matrices,
-            }
-            eval_model(
-                args,
-                model=_wrap,
-                target_dataset=val_set,
-                eval_run_folder=eval_dir,
-                sample_cfg=sample_cfg,
-            )
+                _wrap = type("Wrap", (), {"sampler": sampler_model})()
+                sample_cfg = {
+                    "NFE": 28,
+                    "img_shape": (1024, 1024),
+                    "cfg_scale": 7,
+                    "residual_target_layers": residual_target_layers,
+                    "residual_origin_layer": residual_origin_layer,
+                    "residual_weights": residual_weights.detach(),
+                    "residual_use_layernorm": args.residual_use_layernorm,
+                    "residual_rotation_matrices": residual_rotation_matrices,
+                }
+                eval_model(
+                    args,
+                    model=_wrap,
+                    target_dataset=val_set,
+                    eval_run_folder=eval_dir,
+                    sample_cfg=sample_cfg,
+                )
     pbar.close()
 
-    save_residual_weights(step, suffix="_final")
-    writer.close()
-    print("[INFO] Training complete.")
+    if rank == 0:
+        save_residual_weights(step, suffix="_final")
+        writer.close()
+        print("[INFO] Training complete.")
+    if distributed:
+        dist.destroy_process_group()
 
 
 def main():
