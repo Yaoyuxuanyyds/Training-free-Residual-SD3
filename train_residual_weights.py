@@ -1,4 +1,5 @@
 import argparse
+import json
 import math
 import os
 import os.path as osp
@@ -308,6 +309,14 @@ def train(args):
         }
         filename = f"residual_weights_step{step}{suffix}.pth"
         torch.save(payload, osp.join(log_dir, filename))
+        json_filename = f"residual_weights_step{step}{suffix}.json"
+        json_payload = {
+            "residual_weights": residual_weights.detach().cpu().tolist(),
+            "origin_layer": residual_origin_layer,
+            "target_layers": residual_target_layers,
+        }
+        with open(osp.join(log_dir, json_filename), "w", encoding="utf-8") as f:
+            json.dump(json_payload, f, ensure_ascii=False, indent=2)
 
     step = 0
     epoch = 0
