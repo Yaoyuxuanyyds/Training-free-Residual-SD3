@@ -371,11 +371,18 @@ def train(args):
             residual_rotation_matrices=residual_rotation_matrices,
         )
 
+        if args.residual_smoothness_weight > 0 and residual_weights.numel() > 1:
+            smoothness_loss = (residual_weights[1:] - residual_weights[:-1]).pow(2).mean()
+        else:
+            smoothness_loss = torch.zeros((), device=residual_weights.device)
+
+        total_loss = denoise_loss + args.residual_smoothness_weight * smoothness_loss
+
         if scaler.is_enabled():
-            scaler.scale(denoise_loss).backward()
+            scaler.scale(total_loss).backward()
             scaler.unscale_(optimizer)
         else:
-            denoise_loss.backward()
+            total_loss.backward()
 
         if args.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_([residual_weights_raw], args.grad_clip)
@@ -396,19 +403,29 @@ def train(args):
         w_mean = residual_weights.mean().item()
 
         denoise_loss_value = denoise_loss.detach()
+        smoothness_loss_value = smoothness_loss.detach()
+        total_loss_value = total_loss.detach()
         if distributed:
             dist.all_reduce(denoise_loss_value, op=dist.ReduceOp.SUM)
             denoise_loss_value = denoise_loss_value / world_size
+            dist.all_reduce(smoothness_loss_value, op=dist.ReduceOp.SUM)
+            smoothness_loss_value = smoothness_loss_value / world_size
+            dist.all_reduce(total_loss_value, op=dist.ReduceOp.SUM)
+            total_loss_value = total_loss_value / world_size
 
         if rank == 0:
             pbar.set_description(
                 f"Step {step} | "
+                f"Total {total_loss_value.item():.4f} | "
                 f"Denoise {denoise_loss_value.item():.4f} | "
+                f"Smooth {smoothness_loss_value.item():.4f} | "
                 f"w_mean {w_mean:.4f} | w_min {w_min:.4f} | w_max {w_max:.4f}"
             )
             pbar.update(1)
 
+            writer.add_scalar("train/total_loss", total_loss_value.item(), step)
             writer.add_scalar("train/denoise_loss", denoise_loss_value.item(), step)
+            writer.add_scalar("train/smoothness_loss", smoothness_loss_value.item(), step)
             writer.add_scalar("train/weights_mean", w_mean, step)
             writer.add_scalar("train/weights_min", w_min, step)
             writer.add_scalar("train/weights_max", w_max, step)
@@ -507,6 +524,12 @@ def main():
     parser.add_argument("--residual_weights_ckpt", type=str, default=None)
     parser.add_argument("--residual_use_layernorm", type=int, default=1)
     parser.add_argument("--residual_rotation_path", type=str, default=None)
+    parser.add_argument(
+        "--residual_smoothness_weight",
+        type=float,
+        default=0.0,
+        help="相邻 residual weights 的平滑正则化强度（L2）。",
+    )
 
     args = parser.parse_args()
     args.residual_use_layernorm = bool(args.residual_use_layernorm)
