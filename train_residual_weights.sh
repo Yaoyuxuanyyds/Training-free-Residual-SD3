@@ -7,7 +7,7 @@ conda activate repa-sd3
 cd /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3
 
 
-
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 MODEL_KEY="/inspire/hdd/project/chineseculture/public/yuxuan/base_models/Diffusion/sd3"
 DATASET="blip3o60k"
@@ -42,7 +42,8 @@ torchrun \
   --save_interval 500 \
   --grad_clip 1.0 \
   --residual_origin_layer 1 \
-  --residual_init 0.025 \
+  --residual_init 0.05 \
   --init_mode "constant" \
   --residual_use_layernorm 1 \
   --residual_rotation_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln.pt \
+  --residual_smoothness_weight 0.1

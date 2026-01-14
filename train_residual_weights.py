@@ -155,7 +155,7 @@ def train(args):
     set_seed(args.seed + rank)
 
     global_bs = args.batch_size * world_size
-    log_dir = osp.join(args.logdir, f"{args.model}_residual_weights_lr-{args.lr}_bs-{global_bs}_init-{args.init_mode}{args.residual_init}_steps-{args.steps}")
+    log_dir = osp.join(args.logdir, f"{args.model}_residual_weights_lr-{args.lr}_bs-{global_bs}_init-{args.init_mode}{args.residual_init}_steps-{args.steps}_smooth-{args.residual_smoothness_weight}")
     os.makedirs(log_dir, exist_ok=True)
 
     tb_dir = osp.join(log_dir, "tb")
