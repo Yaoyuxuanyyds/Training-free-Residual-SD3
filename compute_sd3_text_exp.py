@@ -5,7 +5,7 @@
 Supports both single image-text pairs and batched evaluation over datasets. The
 script aggregates metrics across pairs, averages them, and performs PCA
 visualizations on sampled token embeddings collected from all processed pairs.
-PCA is FIT ON ALL LAYERS' TOKENS TOGETHER to ensure cross-layer comparability.
+PCA visualization data can be dumped for external plotting.
 """
 
 import argparse
@@ -253,11 +253,6 @@ def run(args: argparse.Namespace):
     processed_pairs = 0
     t_raw = args.timestep_idx
 
-    # Variables used for single-sample token text annotations
-    pca_annotation_texts = None
-    pca_annotation_indices = None
-    branch_ids_filtered = None
-
     for pair_idx, image_data, prompt_value in iterate_pairs():
         prompt = normalize_prompt(prompt_value)
         prompt_preview = prompt if len(prompt) <= 60 else prompt[:57] + "..."
@@ -276,27 +271,6 @@ def run(args: argparse.Namespace):
 
             if not args.ignore_padding:
                 token_mask = None
-
-        # Prepare token texts and branch ids for single-sample case
-        if args.num_samples == 1 and pca_annotation_texts is None:
-            text_clip1_ids = base.tokenizer_1(
-                prompt, padding="max_length", max_length=77, truncation=True, return_tensors="pt"
-            ).input_ids[0]
-            text_t5_ids = base.tokenizer_3(
-                prompt, padding="max_length", max_length=256, truncation=True, add_special_tokens=True, return_tensors="pt"
-            ).input_ids[0]
-            clip_tokens = [base.tokenizer_1.decode([int(i)], skip_special_tokens=False) for i in text_clip1_ids]
-            t5_tokens = [base.tokenizer_3.decode([int(i)], skip_special_tokens=False) for i in text_t5_ids]
-            token_texts_full = clip_tokens + t5_tokens  # [77 | 256]
-            if token_mask is not None:
-                valid_idx = torch.nonzero(token_mask, as_tuple=False).squeeze(1).cpu().tolist()
-                pca_annotation_texts = [token_texts_full[i] for i in valid_idx]
-                pca_annotation_indices = valid_idx
-                branch_ids_filtered = [0 if i < 77 else 1 for i in valid_idx]
-            else:
-                pca_annotation_texts = token_texts_full
-                pca_annotation_indices = list(range(len(token_texts_full)))
-                branch_ids_filtered = [0]*77 + [1]*256
 
         with torch.no_grad():
             z_t = z_t.to(dtype=denoiser.dtype)
@@ -372,17 +346,8 @@ def run(args: argparse.Namespace):
     plt.close()
     print(f"[SAVE] Curve plot saved to {out_curve}")
 
-    # ===== Global PCA visualization (fit once on ALL layers' tokens) =====
-    from sklearn.decomposition import PCA
-
-    def add_subplot_border(ax, color="black", lw=1.2):
-        for spine in ax.spines.values():
-            spine.set_edgecolor(color)
-            spine.set_linewidth(lw)
-
-    # Collect per-layer features (optionally subsampled)
+    # ===== Dump PCA visualization data =====
     layer_feats_sampled = {}
-    layer_stats = {}   # record pre-normalization statistics
 
     for layer in all_layers:
         token_list = layer_token_collections[layer]
@@ -395,121 +360,21 @@ def run(args: argparse.Namespace):
             feats, normalized_shape=(feats.shape[-1],), eps=1e-6
         )
 
-        # --------------------------------------------
-        # record mean & std after LayerNorm
-        # --------------------------------------------
-        pre_mean = feats.mean(-1, keepdims=True).cpu().numpy()   # shape [1, D]
-        pre_std  = feats.std(-1, keepdims=True).cpu().numpy()    # shape [1, D]
-
-        # Save summary statistics for annotation
-        layer_stats[layer] = {
-            "mean": float(pre_mean.mean()),     # scalar mean over all dims
-            "std": float(pre_std.mean()),       # scalar std over all dims
-        }
-
-        # For single-sample annotated case, DON'T subsample to keep index alignment for texts
+        # Avoid subsampling for single-sample runs to keep full token coverage
         if args.num_samples != 1 and args.vis_sample_size > 0 and feats.shape[0] > args.vis_sample_size:
             perm = torch.randperm(feats.shape[0])[: args.vis_sample_size]
             feats = feats[perm]
 
         layer_feats_sampled[layer] = feats.numpy()
 
-    # Fit PCA ONCE on the union of all layers' tokens
-    all_for_pca = [f for f in layer_feats_sampled.values() if f is not None and f.shape[0] > 2]
-    if len(all_for_pca) == 0:
-        print("[WARN] No token features available for PCA. Skipping PCA plot.")
-        return
-    pca_fit_matrix = np.concatenate(all_for_pca, axis=0)
-    if pca_fit_matrix.shape[0] < 3:
-        print("[WARN] Not enough total tokens for PCA. Skipping PCA plot.")
-        return
+    dump_payload = {"layers": np.array(all_layers, dtype=np.int32)}
+    for layer, feats in layer_feats_sampled.items():
+        if feats is not None and feats.shape[0] > 0:
+            dump_payload[f"layer_{layer}"] = feats
 
-    pca = PCA(n_components=2, random_state=42).fit(pca_fit_matrix)
-
-    n_layers = len(all_layers)
-    ncols = min(6, n_layers)
-    nrows = int(np.ceil(n_layers / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(3 * ncols, 3 * nrows))
-    axes = axes.flatten()
-
-    for i, layer in enumerate(all_layers):
-        feats = layer_feats_sampled[layer]
-        ax = axes[i]
-        if feats is not None and feats.shape[0] > 2:
-            pca_2d = pca.transform(feats)
-
-            # Define colors
-            colors_clip = "royalblue"
-            colors_t5 = "tomato"
-
-            # Single-sample: plot points and colored texts (CLIP/T5) with index
-            if args.num_samples == 1 and pca_annotation_texts is not None:
-                clip_idx = [k for k, b in enumerate(branch_ids_filtered) if b == 0]
-                t5_idx = [k for k, b in enumerate(branch_ids_filtered) if b == 1]
-                if clip_idx:
-                    clip_pts = pca_2d[clip_idx]
-                    ax.scatter(clip_pts[:, 0], clip_pts[:, 1], s=10, alpha=0.3, color=colors_clip, label="CLIP tokens")
-                if t5_idx:
-                    t5_pts = pca_2d[t5_idx]
-                    ax.scatter(t5_pts[:, 0], t5_pts[:, 1], s=10, alpha=0.3, color=colors_t5, label="T5 tokens")
-
-                def _clean(tok: str) -> str:
-                    return tok.replace("</s>", "").replace("<pad>", "").strip()
-
-                for (x, y), tok, tok_idx, bid in zip(
-                    pca_2d, pca_annotation_texts, pca_annotation_indices, branch_ids_filtered
-                ):
-                    t = _clean(tok)
-                    if not t:
-                        continue
-                    label = f"{tok_idx:03d}:{t}"
-                    ax.text(
-                        x, y, label,
-                        fontsize=5, alpha=0.85,
-                        color=colors_clip if bid == 0 else colors_t5
-                    )
-            else:
-                # Multi-sample: color by source (first 77 CLIP, rest T5) if we have full-length tokens
-                n_tokens = feats.shape[0]
-                # Prefer the canonical 77/256 split; otherwise, split by min(77, n_tokens)
-                split = 77 if n_tokens >= 333 else min(77, n_tokens)
-                if split > 0:
-                    clip_pts = pca_2d[:split]
-                    ax.scatter(clip_pts[:, 0], clip_pts[:, 1], s=8, alpha=0.1, color=colors_clip, label="CLIP tokens")
-                if n_tokens - split > 0:
-                    t5_pts = pca_2d[split:]
-                    ax.scatter(t5_pts[:, 0], t5_pts[:, 1], s=8, alpha=0.3, color=colors_t5, label="T5 tokens")
-                if n_tokens > 2:
-                    ax.legend(fontsize=6, loc="best", frameon=False)
-    
-                # Add mean/std annotation
-        if layer in layer_stats:
-            m = layer_stats[layer]["mean"]
-            s = layer_stats[layer]["std"]
-            ax.text(
-                0.02, 0.98,
-                f"μ={m:.2f}\nσ={s:.2f}",
-                transform=ax.transAxes,
-                fontsize=7,
-                verticalalignment="top",
-                horizontalalignment="left",
-                bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=2)
-            )
-
-        ax.set_title(f"Layer {layer}", fontsize=10)
-        ax.set_xticks([]); ax.set_yticks([])
-        add_subplot_border(ax, color="gray", lw=1.0)
-
-    # Hide extra axes
-    for j in range(i + 1, len(axes)):
-        axes[j].axis("off")
-
-    fig.suptitle("PCA (global fit) of text token embeddings across layers", fontsize=14)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-    out_pca = os.path.join(args.output_dir, "text_emb_pca.png")
-    fig.savefig(out_pca, dpi=200)
-    plt.close(fig)
-    print(f"[SAVE] PCA plot saved to {out_pca}")
+    out_dump = os.path.join(args.output_dir, args.pca_dump_name)
+    np.savez_compressed(out_dump, **dump_payload)
+    print(f"[SAVE] PCA dump saved to {out_dump}")
 
 
 # -----------------------------------------------------------------------------
@@ -542,6 +407,7 @@ def parse_args():
     p.add_argument("--num-samples", type=int, default=-1, help="Number of pairs to evaluate from the dataset (-1 for all)")
     p.add_argument("--dataset-train", action="store_true", help="Use the training split of the dataset")
     p.add_argument("--vis-sample-size", type=int, default=512, help="Number of tokens to sample per layer for visualization")
+    p.add_argument("--pca-dump-name", type=str, default="text_emb_layers.npz", help="Filename for PCA dump data")
     p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     return p.parse_args()
 
