@@ -6,7 +6,6 @@ source /inspire/hdd/project/chineseculture/public/yuxuan/miniconda3/etc/profile.
 conda activate qwen-image
 cd /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/Qwen-Image-Residual
 
-export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 MODEL_DIR="/inspire/hdd/project/chineseculture/public/yuxuan/base_models/Diffusion/Qwen-Image"
 DATASET="blip3o60k"
@@ -15,7 +14,7 @@ DATADIR="/inspire/hdd/project/chineseculture/public/yuxuan/datasets"
 LOGDIR="./logs/learnable_residual"
 
 torchrun \
-  --nproc_per_node=4 \
+  --nproc_per_node=8 \
   train_residual_weights.py \
   --model_dir "${MODEL_DIR}" \
   --dataset "${DATASET}" \
