@@ -144,6 +144,16 @@ def select_residual_rotations(
     return rotation_matrices[indices], residual_target_layers
 
 
+def load_residual_weights(path: str) -> torch.Tensor:
+    data = torch.load(path, map_location="cpu")
+    if isinstance(data, dict) and "residual_weights" in data:
+        data = data["residual_weights"]
+
+    if torch.is_tensor(data):
+        return data.detach().cpu()
+    return torch.tensor(data)
+
+
 def denormalize(imgs: torch.Tensor) -> torch.Tensor:
     """
     将像素值范围为 [-1, 1] 的图像张量转换为 [0, 255] 的 uint8 类型张量。

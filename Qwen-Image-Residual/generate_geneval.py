@@ -9,7 +9,7 @@ from einops import rearrange
 from torchvision.utils import make_grid, save_image
 
 from sampler import MyQwenImagePipeline, build_timestep_residual_weight_fn
-from util import load_residual_procrustes, select_residual_rotations
+from util import load_residual_procrustes, select_residual_rotations, load_residual_weights
 
 
 torch.set_grad_enabled(False)
@@ -104,6 +104,7 @@ def parse_args():
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
+    parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_use_layernorm", type=int, default=1)
     parser.add_argument("--residual_stop_grad", type=int, default=1)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
@@ -164,6 +165,9 @@ def main(opt):
         )
         if opt.residual_origin_layer is None and isinstance(meta, dict):
             opt.residual_origin_layer = meta.get("origin_layer")
+
+    if opt.residual_weights is None and opt.residual_weights_path is not None:
+        opt.residual_weights = load_residual_weights(opt.residual_weights_path)
 
     residual_timestep_weight_fn = build_timestep_residual_weight_fn(
         opt.timestep_residual_weight_fn,
