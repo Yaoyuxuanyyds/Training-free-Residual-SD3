@@ -99,7 +99,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         output_hidden_states: bool = False,
         output_text_inputs: bool = False,
         force_txt_grad: bool = False,
-        residual_stop_grad: bool = True,
+        residual_stop_grad: bool = False,
 
         # --- residual 参数 ---
         residual_target_layers: Optional[List[int]] = None,
@@ -227,8 +227,8 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
             if output_hidden_states:
                 img_hidden_states_list.append(hidden_states)
-                if encoder_hidden_states is not None:
-                        encoder_hidden_states.retain_grad()
+                # if encoder_hidden_states is not None:
+                #         encoder_hidden_states.retain_grad()
                 txt_hidden_states_list.append(encoder_hidden_states)
 
         # -------------- output unchanged --------------

@@ -266,8 +266,8 @@ def run(args: argparse.Namespace):
             token_mask = token_mask[0].to(torch.bool)
 
             # Screen out the first token (e.g., <s>/<bos>)
-            # if token_mask.numel() > 0:
-            #     token_mask[0] = False
+            if token_mask.numel() > 0:
+                token_mask[0] = False
 
             if not args.ignore_padding:
                 token_mask = None
@@ -356,9 +356,9 @@ def run(args: argparse.Namespace):
             continue
 
         feats = torch.cat(token_list, dim=0)  # [N_tokens, D]
-        feats = torch.nn.functional.layer_norm(
-            feats, normalized_shape=(feats.shape[-1],), eps=1e-6
-        )
+        # feats = torch.nn.functional.layer_norm(
+        #     feats, normalized_shape=(feats.shape[-1],), eps=1e-6
+        # )
 
         # Avoid subsampling for single-sample runs to keep full token coverage
         if args.num_samples != 1 and args.vis_sample_size > 0 and feats.shape[0] > args.vis_sample_size:

@@ -7,8 +7,7 @@ cd /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3
 
 # 使用 compute_sd3_text_exp.py 的 PCA dump 进行可视化
 python compute_sd3_text_pca.py \
-    --npz-path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/vis/test3/text_emb_layers.npz \
-    --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/vis/test3/pca_layers \
-    --density-bandwidth 0.2 \
+    --npz-path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/results/txt_feat/text_emb_layers.npz \
+    --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/vis/pca_layers-sd3 \
     --cmap viridis \
-    --point-size 4
+    --point-size 0.5

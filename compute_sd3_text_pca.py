@@ -30,24 +30,48 @@ def load_layer_features(npz_path: str):
             feats_by_layer[layer] = data[key]
     return layers, feats_by_layer
 
+def normalize_density(density: np.ndarray, gamma: float = 0.5):
+    """
+    Perceptually enhanced density normalization.
+    """
+    # log compression (already exp-ed, so do log1p)
+    d = np.log1p(density)
 
-def compute_density(points: np.ndarray, bandwidth: float) -> np.ndarray:
-    kde = KernelDensity(bandwidth=bandwidth)
+    # robust clipping (ignore extreme outliers)
+    lo, hi = np.percentile(d, [2, 98])
+    d = np.clip(d, lo, hi)
+
+    # normalize
+    d = (d - lo) / (hi - lo + 1e-12)
+
+    # optional gamma (boost mid-density contrast)
+    d = d ** gamma
+    return d
+
+
+def compute_density(points: np.ndarray, bandwidth: float | None):
+    if bandwidth is None:
+        # Silverman-like heuristic
+        std = np.std(points, axis=0).mean()
+        bandwidth = 0.15 * std
+
+    kde = KernelDensity(bandwidth=bandwidth, kernel="gaussian")
     kde.fit(points)
     log_density = kde.score_samples(points)
-    density = np.exp(log_density)
-    if density.size == 0:
-        return density
-    density = (density - density.min()) / (density.max() - density.min() + 1e-12)
-    return density
+    return np.exp(log_density)
 
 
-def plot_layer(points: np.ndarray, output_path: str, bandwidth: float, cmap: str, point_size: float):
+
+def plot_layer(points, output_path, bandwidth, cmap, point_size):
     density = compute_density(points, bandwidth=bandwidth)
-    if density.size > 0:
-        order = np.argsort(density)
-        points = points[order]
-        density = density[order]
+    if density.size == 0:
+        return
+
+    density = normalize_density(density, gamma=0.8)
+
+    order = np.argsort(density)
+    points = points[order]
+    density = density[order]
 
     plt.figure(figsize=(3, 3), dpi=200)
     plt.scatter(
@@ -56,12 +80,14 @@ def plot_layer(points: np.ndarray, output_path: str, bandwidth: float, cmap: str
         c=density,
         s=point_size,
         cmap=cmap,
-        edgecolors="none",
+        alpha=0.9,
+        linewidths=0,
     )
     plt.axis("off")
     plt.margins(0, 0)
-    plt.savefig(output_path, bbox_inches="tight", pad_inches=0, facecolor="white")
+    plt.savefig(output_path, bbox_inches="tight", pad_inches=0)
     plt.close()
+
 
 
 def run(args: argparse.Namespace):
@@ -101,7 +127,12 @@ def parse_args():
     parser.add_argument("--npz-path", type=str, required=True, help="Path to PCA dump produced by compute_sd3_text_exp.py")
     parser.add_argument("--output-dir", type=str, default=None, help="Directory to save PCA images")
     parser.add_argument("--output-prefix", type=str, default="text_pca", help="Prefix for PCA images")
-    parser.add_argument("--density-bandwidth", type=float, default=0.2, help="Bandwidth for density estimation")
+    parser.add_argument(
+        "--density-bandwidth",
+        type=float,
+        default=None,
+        help="KDE bandwidth (None = adaptive)"
+    )
     parser.add_argument("--cmap", type=str, default="viridis", help="Colormap for density (blue->yellow)")
     parser.add_argument("--point-size", type=float, default=4.0, help="Scatter point size")
     return parser.parse_args()

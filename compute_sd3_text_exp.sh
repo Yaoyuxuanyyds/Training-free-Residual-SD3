@@ -7,24 +7,24 @@ cd /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3
 
 
 
-# python compute_sd3_text_cknna_pro.py \
-#     --dataset blip3o \
-#     --datadir /inspire/hdd/project/chineseculture/public/yuxuan/datasets \
-#     --num-samples 25 \
-#     --timestep-idx 500 \
-#     --vis-sample-size 100000 \
-#     --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/REPA-sd3/logs/results/results-data-rm1/base-normalize-LN \
-#     --dataset-train \
-#     --ignore-padding
+python compute_sd3_text_exp.py \
+    --dataset blip3o \
+    --datadir /inspire/hdd/project/chineseculture/public/yuxuan/datasets \
+    --num-samples 50 \
+    --timestep-idx 500 \
+    --vis-sample-size 5000 \
+    --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/results/txt_feat \
+    --dataset-train \
+    --ignore-padding
 
-# 单条 prompt 可视化（带 token idx+内容标注）
-python compute_sd3_text_cknna_pro.py \
-    --prompt "A cozy living room with a wooden coffee table, a white mug, a small potted plant, and stacked books, warm natural light from a window." \
-    --image /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/image0.png \
-    --timestep-idx 945 \
-    --num-samples 1 \
-    --ignore-padding \
-    --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/vis/test3
+# # 单条 prompt 可视化（带 token idx+内容标注）
+# python compute_sd3_text_cknna_pro.py \
+#     --prompt "A cozy living room with a wooden coffee table, a white mug, a small potted plant, and stacked books, warm natural light from a window." \
+#     --image /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/image0.png \
+#     --timestep-idx 945 \
+#     --num-samples 1 \
+#     --ignore-padding \
+#     --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/vis/test3
 
 # A cozy living room with a wooden coffee table, a white mug, a small potted plant, and stacked books, warm natural light from a window.
 
