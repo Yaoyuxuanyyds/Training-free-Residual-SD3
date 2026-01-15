@@ -15,10 +15,11 @@ from torch.utils.tensorboard import SummaryWriter
 import tqdm
 import yaml
 
-from datasets import CachedFeatureDataset_Packed, collate_fn_packed
+from datasets import CachedFeatureDataset_Packed, collate_fn_packed, get_target_dataset
 from sampler import MyQwenImagePipeline
 from util import (
     build_text_token_nonpad_mask,
+    get_transform,
     load_residual_procrustes,
     select_residual_rotations,
     set_seed,
@@ -48,6 +49,40 @@ def _ensure_prompt_mask(prompt_embeds: torch.Tensor, prompt_mask: Optional[torch
     if mask.dim() == 1:
         mask = mask.unsqueeze(0)
     return mask.to(device=prompt_embeds.device)
+
+
+def _pack_latents_if_needed(
+    pipe: MyQwenImagePipeline,
+    latents: torch.Tensor,
+    height: int,
+    width: int,
+) -> torch.Tensor:
+    if hasattr(pipe, "_pack_latents"):
+        return pipe._pack_latents(latents, height, width, pipe.vae_scale_factor)
+    return latents
+
+
+def _encode_images_to_latents(
+    pipe: MyQwenImagePipeline,
+    images: torch.Tensor,
+    height: int,
+    width: int,
+) -> torch.Tensor:
+    images = images.to(dtype=pipe.vae.dtype)
+    latent_dist = pipe.vae.encode(images).latent_dist
+    latents = latent_dist.sample()
+
+    latents_mean = torch.tensor(pipe.vae.config.latents_mean).view(
+        1, pipe.vae.config.z_dim, 1, 1, 1
+    )
+    latents_std = 1.0 / torch.tensor(pipe.vae.config.latents_std).view(
+        1, pipe.vae.config.z_dim, 1, 1, 1
+    )
+    latents_mean = latents_mean.to(device=latents.device, dtype=latents.dtype)
+    latents_std = latents_std.to(device=latents.device, dtype=latents.dtype)
+
+    latents = (latents - latents_mean) * latents_std
+    return _pack_latents_if_needed(pipe, latents, height, width)
 
 
 # =========================
@@ -179,12 +214,24 @@ def train(args):
         with open(osp.join(log_dir, "config.yaml"), "w") as f:
             yaml.dump(vars(args), f)
 
-    dataset = CachedFeatureDataset_Packed(
-        cache_dirs=args.precompute_dir,
-        target_batch_size=args.batch_size,
-        cache_meta=True,
-        ar_target_layer=args.ar_target_layer,
-    )
+    use_cache = args.precompute_dir is not None
+    if use_cache:
+        dataset = CachedFeatureDataset_Packed(
+            cache_dirs=args.precompute_dir,
+            target_batch_size=args.batch_size,
+            cache_meta=True,
+            ar_target_layer=args.ar_target_layer,
+        )
+    else:
+        if args.datadir is None:
+            raise ValueError("datadir is required when precompute_dir is not provided.")
+        transform = get_transform(args.img_size)
+        dataset = get_target_dataset(
+            args.dataset,
+            args.datadir,
+            train=True,
+            transform=transform,
+        )
 
     if distributed:
         sampler = torch.utils.data.distributed.DistributedSampler(
@@ -197,13 +244,14 @@ def train(args):
 
     loader = DataLoader(
         dataset,
-        batch_size=1,
+        batch_size=1 if use_cache else args.batch_size,
         shuffle=shuffle,
         sampler=sampler,
         num_workers=16,
         pin_memory=False,
         persistent_workers=True,
-        collate_fn=collate_fn_packed,
+        collate_fn=collate_fn_packed if use_cache else None,
+        drop_last=not use_cache,
     )
 
     pipe = MyQwenImagePipeline.from_pretrained(
@@ -352,24 +400,45 @@ def train(args):
             batch = next(data_iter)
         step += 1
 
-        prompt_embeds = _get_batch_value(
-            batch, ("prompt_embeds", "prompt_emb", "txt_hidden_states")
-        )
-        prompt_mask = _get_batch_value(
-            batch, ("prompt_embeds_mask", "prompt_mask", "txt_mask")
-        )
-        latents = _get_batch_value(batch, ("latents", "x0", "latent"))
-
-        if prompt_embeds is None or latents is None:
-            raise KeyError(
-                "Cached batch must include prompt_embeds/txt_hidden_states and latents/x0."
+        if use_cache:
+            prompt_embeds = _get_batch_value(
+                batch, ("prompt_embeds", "prompt_emb", "txt_hidden_states")
             )
+            prompt_mask = _get_batch_value(
+                batch, ("prompt_embeds_mask", "prompt_mask", "txt_mask")
+            )
+            latents = _get_batch_value(batch, ("latents", "x0", "latent"))
 
-        prompt_embeds = prompt_embeds.to(device)
-        latents = latents.to(device)
-        if prompt_mask is not None:
-            prompt_mask = prompt_mask.to(device)
-        prompt_mask = _ensure_prompt_mask(prompt_embeds, prompt_mask)
+            if prompt_embeds is None or latents is None:
+                raise KeyError(
+                    "Cached batch must include prompt_embeds/txt_hidden_states and latents/x0."
+                )
+
+            prompt_embeds = prompt_embeds.to(device)
+            latents = latents.to(device)
+            if prompt_mask is not None:
+                prompt_mask = prompt_mask.to(device)
+            prompt_mask = _ensure_prompt_mask(prompt_embeds, prompt_mask)
+        else:
+            images, prompts = batch
+            images = images.to(device)
+            prompts_list = list(prompts)
+
+            with torch.no_grad():
+                prompt_embeds, prompt_mask = pipe.encode_prompt(
+                    prompt=prompts_list,
+                    device=device,
+                    num_images_per_prompt=1,
+                    max_sequence_length=args.max_sequence_length,
+                )
+                latents = _encode_images_to_latents(
+                    pipe,
+                    images,
+                    height=args.img_size,
+                    width=args.img_size,
+                )
+
+            prompt_mask = _ensure_prompt_mask(prompt_embeds, prompt_mask)
 
         if args.dtype == "float32":
             prompt_embeds = prompt_embeds.float()
@@ -498,6 +567,8 @@ def main():
         type=str,
         default="/path/to/Qwen-Image",
     )
+    parser.add_argument("--dataset", type=str, default="coco")
+    parser.add_argument("--datadir", type=str, default=None)
     parser.add_argument("--use_8bit", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
 
@@ -511,6 +582,7 @@ def main():
     parser.add_argument("--ar_target_layer", type=int, default=10)
 
     parser.add_argument("--img_size", type=int, default=1024)
+    parser.add_argument("--max_sequence_length", type=int, default=256)
     parser.add_argument("--time_mode", type=str, default="logitnorm")
     parser.add_argument("--time_shift", type=float, default=0.0)
 

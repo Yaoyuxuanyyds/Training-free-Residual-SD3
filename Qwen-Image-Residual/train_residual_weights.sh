@@ -9,12 +9,8 @@ cd /path/to/Training-free-Residual-SD3/Qwen-Image-Residual
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 MODEL_DIR="/path/to/Qwen-Image"
-CACHE_DIRS=(
-  "/path/to/qwen/cache/shard0"
-  "/path/to/qwen/cache/shard1"
-  "/path/to/qwen/cache/shard2"
-  "/path/to/qwen/cache/shard3"
-)
+DATASET="coco"
+DATADIR="/path/to/datasets"
 
 LOGDIR="./logs/learnable_residual"
 
@@ -22,7 +18,8 @@ torchrun \
   --nproc_per_node=4 \
   train_residual_weights.py \
   --model_dir "${MODEL_DIR}" \
-  --precompute_dir "${CACHE_DIRS[@]}" \
+  --dataset "${DATASET}" \
+  --datadir "${DATADIR}" \
   --logdir "${LOGDIR}" \
   --img_size 1024 \
   --steps 5000 \
