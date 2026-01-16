@@ -27,17 +27,9 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
         self._saved_origin_text: Optional[torch.Tensor] = None
 
     @staticmethod
-    def _standardize_tokenwise(x: torch.Tensor, eps: float = 1e-6):
-        """
-        对最后一维 (hidden_dim) 做 z-score：
-        x_norm = (x - mean) / (std + eps)
-        返回 (x_norm, mean, std)，方便之后把 scale/shift 加回去。
-        形状保持和 x 一致。
-        """
-        mean = x.mean(dim=-1, keepdim=True)
-        std = x.std(dim=-1, keepdim=True)
-        x_norm = (x - mean) / (std + eps)
-        return x_norm, mean, std
+    def _rms_norm_tokenwise(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+        rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
+        return x / rms
 
     def _apply_residual(
         self,
@@ -55,23 +47,19 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
             target_nograd = target
             origin_nograd = origin
 
-        target_norm, target_mean, target_std = self._standardize_tokenwise(target_nograd)
-        origin_norm, _, _ = self._standardize_tokenwise(origin_nograd)
+        target_mean = target_nograd.mean(dim=-1, keepdim=True)
+        target_std = target_nograd.std(dim=-1, keepdim=True)
+        target_norm = self._rms_norm_tokenwise(target_nograd)
+        origin_norm = self._rms_norm_tokenwise(origin_nograd)
 
         if rotation_matrix is not None:
             origin_norm = torch.matmul(origin_norm, rotation_matrix)
 
-        if w >= 0:
-            mixed_norm = target_norm + w * origin_norm
-        else:
-            mixed_norm = target_norm * (1 - w)
+        w = torch.clamp(w, min=0)
+        mixed_norm = target_norm + w * origin_norm
 
         if use_layernorm:
-            mixed_norm = torch.nn.functional.layer_norm(
-                mixed_norm,
-                normalized_shape=mixed_norm.shape[-1:],
-                eps=1e-6,
-            )
+            mixed_norm = self._rms_norm_tokenwise(mixed_norm)
 
         return mixed_norm * target_std + target_mean
 

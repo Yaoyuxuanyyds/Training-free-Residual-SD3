@@ -138,20 +138,18 @@ def _iterate_pairs(args: argparse.Namespace, dataset):
 
 
 
-def simulate_step_ln(chunks: List[torch.Tensor]) -> List[torch.Tensor]:
-    """模拟推理时的 LayerNorm (行归一化)."""
-    ln_chunks = []
+def simulate_step_rmsnorm(chunks: List[torch.Tensor]) -> List[torch.Tensor]:
+    """模拟推理时的 RMSNorm (行归一化)."""
+    rms_chunks = []
     for x in chunks:
         # x shape: [num_tokens, d]
         if x.shape[0] == 0:
-            ln_chunks.append(x)
+            rms_chunks.append(x)
             continue
-        # 计算每一行的均值和标准差
-        mean = x.mean(dim=-1, keepdim=True)
-        std = x.std(dim=-1, keepdim=True) + 1e-6
-        x_ln = (x - mean) / std
-        ln_chunks.append(x_ln)
-    return ln_chunks
+        rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + 1e-6)
+        x_norm = x / rms
+        rms_chunks.append(x_norm)
+    return rms_chunks
 
 
 def run(args: argparse.Namespace):
@@ -263,20 +261,19 @@ def run(args: argparse.Namespace):
             target_chunks[layer].append(target_state)
 
     # --- 阶段 2: 模拟推理分布（行归一化） ---
-    def apply_simulated_ln(chunks_list: List[torch.Tensor]) -> torch.Tensor:
+    def apply_simulated_rmsnorm(chunks_list: List[torch.Tensor]) -> torch.Tensor:
         processed = []
         for x in chunks_list:
             # x: [num_tokens, d]
             if x.shape[0] == 0: continue
-            # 行归一化：模拟推理时的 LayerNorm
-            mu = x.mean(dim=-1, keepdim=True)
-            st = x.std(dim=-1, keepdim=True) + 1e-6
-            processed.append((x - mu) / st)
+            # 行归一化：模拟推理时的 RMSNorm
+            rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + 1e-6)
+            processed.append(x / rms)
         return torch.cat(processed, dim=0)
 
-    print("[PROCESS] Applying Row-wise LN and Column-wise Centering...")
+    print("[PROCESS] Applying Row-wise RMSNorm and Column-wise Centering...")
     # 得到模拟推理分布后的 X
-    X_ln = apply_simulated_ln(origin_chunks)
+    X_ln = apply_simulated_rmsnorm(origin_chunks)
     # X 全局列中心化
     X_final = X_ln - X_ln.mean(dim=0, keepdim=True)
 
@@ -284,7 +281,7 @@ def run(args: argparse.Namespace):
 
     # --- 阶段 3: 计算各层的正交旋转矩阵 ---
     for layer in target_layers:
-        Y_ln = apply_simulated_ln(target_chunks[layer])
+        Y_ln = apply_simulated_rmsnorm(target_chunks[layer])
         # Y 全局列中心化
         Y_final = Y_ln - Y_ln.mean(dim=0, keepdim=True)
 
@@ -311,7 +308,7 @@ def run(args: argparse.Namespace):
         "rotation_matrices": rotation_stack,
         "feature_dim": X_final.shape[1],
         "num_valid_tokens": X_final.shape[0],
-        "strategy": "row_ln_then_col_center",
+        "strategy": "row_rmsnorm_then_col_center",
     }
     torch.save(payload, args.output)
     print(f"[DONE] Saved Procrustes rotations to {args.output}")

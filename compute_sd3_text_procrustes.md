@@ -50,10 +50,10 @@ python compute_sd3_text_procrustes.py \
 **File:** `transformer.py`
 
 The residual path now supports an optional **rotation matrix** per target layer:
-1. **Token-wise LN (standardization)**
+1. **Token-wise RMSNorm**
 2. **Orthogonal rotation**: `o_norm = o_norm @ R`
 3. **Residual addition**: `t_norm + w * o_norm`
-4. **Optional LayerNorm**
+4. **Optional RMSNorm**
 5. **Rescale back to target statistics**
 
 ### Wiring the rotation matrices into inference
