@@ -68,6 +68,8 @@ def _encode_images_to_latents(
     height: int,
     width: int,
 ) -> torch.Tensor:
+    if images.dim() == 4:
+        images = images.unsqueeze(2)
     images = images.to(dtype=pipe.vae.dtype)
     latent_dist = pipe.vae.encode(images).latent_dist
     latents = latent_dist.sample()
