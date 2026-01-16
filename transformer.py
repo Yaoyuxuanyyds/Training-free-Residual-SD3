@@ -27,13 +27,12 @@ class SD3Transformer2DModel_Residual(nn.Module):
         return super().to(*args, **kwargs)
 
     # ===============================================================
-    #  token-wise 标准化
+    #  token-wise RMS 归一化
     # ===============================================================
     @staticmethod
-    def _standardize_tokenwise(x, eps=1e-6):
-        mean = x.mean(dim=-1, keepdim=True)
-        std = x.std(dim=-1, keepdim=True) + eps
-        return (x - mean) / std, mean, std
+    def _rms_norm_tokenwise(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+        rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
+        return x / rms
 
     # ===============================================================
     #  改进 residual（支持 stopgrad + 可选 LN）
@@ -61,26 +60,21 @@ class SD3Transformer2DModel_Residual(nn.Module):
             target_nograd = target
             origin_nograd = origin
 
-        # --- standardize ---
-        t_norm, t_mean, t_std = self._standardize_tokenwise(target_nograd)
-        o_norm, _, _ = self._standardize_tokenwise(origin_nograd)
+        mu_tgt = target_nograd.mean(dim=-1, keepdim=True)
+        sigma_tgt = target_nograd.std(dim=-1, keepdim=True)
+
+        t_norm = self._rms_norm_tokenwise(target_nograd)
+        o_norm = self._rms_norm_tokenwise(origin_nograd)
         if rotation_matrix is not None:
             o_norm = torch.matmul(o_norm, rotation_matrix)
 
-        # --- residual rule ---
-        if w >= 0:
-            mixed = t_norm + w * o_norm
-        else:
-            mixed = t_norm * (1 - w)
+        w = torch.clamp(w, min=0)
+        mixed = t_norm + w * o_norm
 
-        # --- optional LN ---
         if use_layernorm:
-            mixed = torch.nn.functional.layer_norm(
-                mixed, normalized_shape=mixed.shape[-1:], eps=1e-6
-            )
+            mixed = self._rms_norm_tokenwise(mixed)
 
-        # --- restore original scale ---
-        return mixed * t_std + t_mean
+        return mixed * sigma_tgt + mu_tgt
 
 
     # ===============================================================
