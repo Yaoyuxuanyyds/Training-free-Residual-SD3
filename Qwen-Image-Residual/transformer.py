@@ -20,7 +20,6 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
         self.residual_origin_layer: Optional[int] = None
         self.residual_target_layers: List[int] = []
         self.residual_weights: Optional[torch.Tensor] = None
-        self.residual_use_layernorm: bool = True
         self.residual_stop_grad: bool = True
         self.residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None
 
@@ -68,7 +67,6 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
             target: torch.Tensor,
             origin: torch.Tensor,
             w: torch.Tensor,
-            use_layernorm: bool = True,  # 这里的命名建议在文档中解释为“标准化再对齐”
             stop_grad: bool = True,
             rotation_matrix: Optional[torch.Tensor] = None,
         ) -> torch.Tensor:
@@ -114,7 +112,6 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
         residual_origin_layer: Optional[int],
         residual_target_layers: Optional[Union[List[int], torch.Tensor]],
         residual_weights: Optional[Union[List[float], torch.Tensor]],
-        residual_use_layernorm: bool = True,
         residual_stop_grad: bool = True,
         residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
     ):
@@ -137,7 +134,6 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
         self.residual_weights = residual_weights
 
         self.residual_origin_layer = int(residual_origin_layer)
-        self.residual_use_layernorm = bool(residual_use_layernorm)
         self.residual_stop_grad = bool(residual_stop_grad)
         self.residual_rotation_matrices = residual_rotation_matrices
         self._saved_origin_text = None
@@ -273,7 +269,6 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
                         encoder_hidden_states,
                         origin,
                         w,
-                        use_layernorm=self.residual_use_layernorm,
                         stop_grad=self.residual_stop_grad,
                         rotation_matrix=rotation,
                     )

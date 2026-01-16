@@ -344,7 +344,6 @@ def train(args):
         residual_origin_layer,
         residual_target_layers,
         None,
-        residual_use_layernorm=args.residual_use_layernorm,
         residual_stop_grad=args.residual_stop_grad,
         residual_rotation_matrices=residual_rotation_matrices,
     )
@@ -615,7 +614,6 @@ def main():
     parser.add_argument("--residual_init", type=float, default=0.0)
     parser.add_argument("--init_mode", type=str, default="constant")
     parser.add_argument("--residual_weights_ckpt", type=str, default=None)
-    parser.add_argument("--residual_use_layernorm", type=int, default=1)
     parser.add_argument("--residual_stop_grad", type=int, default=1)
     parser.add_argument("--residual_rotation_path", type=str, default=None)
     parser.add_argument(
@@ -626,7 +624,6 @@ def main():
     )
 
     args = parser.parse_args()
-    args.residual_use_layernorm = bool(args.residual_use_layernorm)
     args.residual_stop_grad = bool(args.residual_stop_grad)
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"

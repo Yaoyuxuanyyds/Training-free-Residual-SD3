@@ -27,7 +27,6 @@ class QwenImageGenerator:
         residual_weights=None,
         residual_rotation_matrices=None,
         residual_timestep_weight_fn=None,
-        residual_use_layernorm=True,
         residual_stop_grad=True,
         true_cfg_scale=4.0,
         num_inference_steps=50,
@@ -45,7 +44,6 @@ class QwenImageGenerator:
             residual_weights=residual_weights,
             residual_rotation_matrices=residual_rotation_matrices,
             residual_timestep_weight_fn=residual_timestep_weight_fn,
-            residual_use_layernorm=residual_use_layernorm,
             residual_stop_grad=residual_stop_grad,
         ).to(self.device)
 
@@ -105,7 +103,6 @@ def parse_args():
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_weights_path", type=str, default=None)
-    parser.add_argument("--residual_use_layernorm", type=int, default=1)
     parser.add_argument("--residual_stop_grad", type=int, default=1)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
     parser.add_argument(
@@ -183,7 +180,6 @@ def main(opt):
         residual_weights=opt.residual_weights,
         residual_rotation_matrices=residual_rotation_matrices,
         residual_timestep_weight_fn=residual_timestep_weight_fn,
-        residual_use_layernorm=bool(opt.residual_use_layernorm),
         residual_stop_grad=bool(opt.residual_stop_grad),
         true_cfg_scale=opt.cfg,
         num_inference_steps=opt.steps,

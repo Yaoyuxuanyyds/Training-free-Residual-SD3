@@ -157,7 +157,6 @@ class MyQwenImagePipeline(QwenImagePipeline):
         residual_origin_layer=None,
         residual_target_layers=None,
         residual_weights=None,
-        residual_use_layernorm: bool = True,
         residual_stop_grad: bool = True,
         residual_rotation_matrices=None,
         residual_timestep_weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]] = None,
@@ -195,7 +194,6 @@ class MyQwenImagePipeline(QwenImagePipeline):
             residual_origin_layer,
             residual_target_layers,
             residual_weights,
-            residual_use_layernorm=residual_use_layernorm,
             residual_stop_grad=residual_stop_grad,
             residual_rotation_matrices=residual_rotation_matrices,
         )
@@ -211,7 +209,6 @@ class MyQwenImagePipeline(QwenImagePipeline):
         pipe._residual_origin_layer = residual_origin_layer
         pipe._residual_target_layers = residual_target_layers
         pipe._residual_base_weights = residual_weights
-        pipe._residual_use_layernorm = residual_use_layernorm
         pipe._residual_stop_grad = residual_stop_grad
         pipe._residual_rotation_matrices = residual_rotation_matrices
         pipe._residual_timestep_weight_fn = residual_timestep_weight_fn
