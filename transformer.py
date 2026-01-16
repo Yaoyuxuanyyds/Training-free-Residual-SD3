@@ -37,45 +37,97 @@ class SD3Transformer2DModel_Residual(nn.Module):
     # ===============================================================
     #  改进 residual（支持 stopgrad + 可选 LN）
     # ===============================================================
+    # def _apply_residual(
+    #     self,
+    #     target: torch.Tensor,
+    #     origin: torch.Tensor,
+    #     w: torch.Tensor,
+    #     use_layernorm: bool = True,
+    #     stop_grad: bool = True,
+    #     rotation_matrix: Optional[torch.Tensor] = None,
+    # ):
+    #     """
+    #     target/origin: [B, L, D]
+    #     w: scalar tensor
+    #     """
+
+    #     # ----------- STOP GRADIENT PART -----------
+    #     # residual 的 2 个输入都不参与梯度
+    #     if stop_grad:
+    #         target_nograd = target.detach()
+    #         origin_nograd = origin.detach()
+    #     else:
+    #         target_nograd = target
+    #         origin_nograd = origin
+
+    #     mu_tgt = target_nograd.mean(dim=-1, keepdim=True)
+    #     sigma_tgt = target_nograd.std(dim=-1, keepdim=True)
+
+    #     t_norm = self._rms_norm_tokenwise(target_nograd)
+    #     o_norm = self._rms_norm_tokenwise(origin_nograd)
+    #     if rotation_matrix is not None:
+    #         o_norm = torch.matmul(o_norm, rotation_matrix)
+
+    #     w = torch.clamp(w, min=0)
+    #     mixed = t_norm + w * o_norm
+
+    #     if use_layernorm:
+    #         mixed = self._rms_norm_tokenwise(mixed)
+
+    #     return mixed * sigma_tgt + mu_tgt
     def _apply_residual(
-        self,
-        target: torch.Tensor,
-        origin: torch.Tensor,
-        w: torch.Tensor,
-        use_layernorm: bool = True,
-        stop_grad: bool = True,
-        rotation_matrix: Optional[torch.Tensor] = None,
-    ):
-        """
-        target/origin: [B, L, D]
-        w: scalar tensor
-        """
+            self,
+            target: torch.Tensor,
+            origin: torch.Tensor,
+            w: torch.Tensor,
+            use_layernorm: bool = True, # 这里参数名保留，但内部逻辑已修正
+            stop_grad: bool = True,
+            rotation_matrix: Optional[torch.Tensor] = None,
+        ):
+            """
+            target/origin: [B, L, D]
+            w: scalar tensor
+            """
 
-        # ----------- STOP GRADIENT PART -----------
-        # residual 的 2 个输入都不参与梯度
-        if stop_grad:
-            target_nograd = target.detach()
-            origin_nograd = origin.detach()
-        else:
-            target_nograd = target
-            origin_nograd = origin
+            # ----------- STOP GRADIENT PART -----------
+            if stop_grad:
+                target_nograd = target.detach()
+                origin_nograd = origin.detach()
+            else:
+                target_nograd = target
+                origin_nograd = origin
 
-        mu_tgt = target_nograd.mean(dim=-1, keepdim=True)
-        sigma_tgt = target_nograd.std(dim=-1, keepdim=True)
+            # 1. 提取 Target 的锚点统计量 (分布指纹)
+            mu_tgt = target_nograd.mean(dim=-1, keepdim=True)
+            sigma_tgt = target_nograd.std(dim=-1, keepdim=True)
 
-        t_norm = self._rms_norm_tokenwise(target_nograd)
-        o_norm = self._rms_norm_tokenwise(origin_nograd)
-        if rotation_matrix is not None:
-            o_norm = torch.matmul(o_norm, rotation_matrix)
+            # 2. 几何融合 (保持使用 RMSNorm 以保护语义方向)
+            t_norm = self._rms_norm_tokenwise(target_nograd)
+            o_norm = self._rms_norm_tokenwise(origin_nograd)
+            
+            if rotation_matrix is not None:
+                # 注意：如果 rotation_matrix 是 (D, D)，matmul 默认是最后两维运算，符合预期
+                o_norm = torch.matmul(o_norm, rotation_matrix)
 
-        w = torch.clamp(w, min=0)
-        mixed = t_norm + w * o_norm
+            w = torch.clamp(w, min=0)
+            mixed = t_norm + w * o_norm
 
-        if use_layernorm:
-            mixed = self._rms_norm_tokenwise(mixed)
+            # 3. 分布恢复 (CRITICAL FIX)
+            # 必须先将 mixed 强制变为 均值0、方差1 的分布，
+            # 才能正确地映射回 Target 的数值空间。
+            # 这里不能用 RMSNorm，必须用类似 LayerNorm 的标准化逻辑（但不含 affine 参数）
+            
+            mixed_mean = mixed.mean(dim=-1, keepdim=True)
+            mixed_std = mixed.std(dim=-1, keepdim=True)
+            
+            # 显式标准化：(x - u) / s
+            # 加上 1e-6 防止除以 0
+            mixed_normalized = (mixed - mixed_mean) / (mixed_std + 1e-6)
 
-        return mixed * sigma_tgt + mu_tgt
-
+            # 4. 锚定映射
+            # 现在 mixed_normalized 是标准的 N(0,1)，乘以 sigma 加 mu 后
+            # 就完美变成了 N(mu_tgt, sigma_tgt)
+            return mixed_normalized * sigma_tgt + mu_tgt
 
     # ===============================================================
     #  forward

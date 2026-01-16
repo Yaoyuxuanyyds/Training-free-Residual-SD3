@@ -31,38 +31,84 @@ class MyQwenImageTransformer2DModel(QwenImageTransformer2DModel):
         rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
         return x / rms
 
+    # def _apply_residual(
+    #     self,
+    #     target: torch.Tensor,
+    #     origin: torch.Tensor,
+    #     w: torch.Tensor,
+    #     use_layernorm: bool = True,
+    #     stop_grad: bool = True,
+    #     rotation_matrix: Optional[torch.Tensor] = None,
+    # ) -> torch.Tensor:
+    #     if stop_grad:
+    #         target_nograd = target.detach()
+    #         origin_nograd = origin.detach()
+    #     else:
+    #         target_nograd = target
+    #         origin_nograd = origin
+
+    #     target_mean = target_nograd.mean(dim=-1, keepdim=True)
+    #     target_std = target_nograd.std(dim=-1, keepdim=True)
+    #     target_norm = self._rms_norm_tokenwise(target_nograd)
+    #     origin_norm = self._rms_norm_tokenwise(origin_nograd)
+
+    #     if rotation_matrix is not None:
+    #         origin_norm = torch.matmul(origin_norm, rotation_matrix)
+
+    #     w = torch.clamp(w, min=0)
+    #     mixed_norm = target_norm + w * origin_norm
+
+    #     if use_layernorm:
+    #         mixed_norm = self._rms_norm_tokenwise(mixed_norm)
+
+    #     return mixed_norm * target_std + target_mean
+
     def _apply_residual(
-        self,
-        target: torch.Tensor,
-        origin: torch.Tensor,
-        w: torch.Tensor,
-        use_layernorm: bool = True,
-        stop_grad: bool = True,
-        rotation_matrix: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if stop_grad:
-            target_nograd = target.detach()
-            origin_nograd = origin.detach()
-        else:
-            target_nograd = target
-            origin_nograd = origin
+            self,
+            target: torch.Tensor,
+            origin: torch.Tensor,
+            w: torch.Tensor,
+            use_layernorm: bool = True,  # 这里的命名建议在文档中解释为“标准化再对齐”
+            stop_grad: bool = True,
+            rotation_matrix: Optional[torch.Tensor] = None,
+        ) -> torch.Tensor:
+            # ----------- 梯度控制 -----------
+            if stop_grad:
+                target_nograd = target.detach()
+                origin_nograd = origin.detach()
+            else:
+                target_nograd = target
+                origin_nograd = origin
 
-        target_mean = target_nograd.mean(dim=-1, keepdim=True)
-        target_std = target_nograd.std(dim=-1, keepdim=True)
-        target_norm = self._rms_norm_tokenwise(target_nograd)
-        origin_norm = self._rms_norm_tokenwise(origin_nograd)
+            # 1. 提取目标层的分布“指纹” (Anchor)
+            target_mean = target_nograd.mean(dim=-1, keepdim=True)
+            target_std = target_nograd.std(dim=-1, keepdim=True)
 
-        if rotation_matrix is not None:
-            origin_norm = torch.matmul(origin_norm, rotation_matrix)
+            # 2. 注入阶段：使用 RMSNorm 保护语义方向
+            target_norm = self._rms_norm_tokenwise(target_nograd)
+            origin_norm = self._rms_norm_tokenwise(origin_nograd)
 
-        w = torch.clamp(w, min=0)
-        mixed_norm = target_norm + w * origin_norm
+            if rotation_matrix is not None:
+                # 几何对齐：将源语义旋转至目标坐标系
+                origin_norm = torch.matmul(origin_norm, rotation_matrix)
 
-        if use_layernorm:
-            mixed_norm = self._rms_norm_tokenwise(mixed_norm)
+            w = torch.clamp(w, min=0)
+            # 矢量叠加：在单位球面上融合语义
+            mixed_norm = target_norm + w * origin_norm
 
-        return mixed_norm * target_std + target_mean
+            # 3. 恢复阶段：强制中心化以适配冻结权重 (CRITICAL)
+            # 计算融合后特征的实际均值和标准差
+            mixed_mean = mixed_norm.mean(dim=-1, keepdim=True)
+            mixed_std = mixed_norm.std(dim=-1, keepdim=True)
+            
+            # 强制转换为标准正态分布 N(0, 1)
+            # 这一步抹除了 RMSNorm 带来的均值漂移，确保后续映射的准确性
+            mixed_norm = (mixed_norm - mixed_mean) / (mixed_std + 1e-6)
 
+            # 4. 分布锚定：映射回目标层的原始数值域
+            # 现在 mixed_norm 均值为 0，乘以 std 加 mean 后能完美契合下一层 Block 的输入偏好
+            return mixed_norm * target_std + target_mean
+        
     def set_residual_config(
         self,
         residual_origin_layer: Optional[int],

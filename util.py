@@ -130,8 +130,10 @@ def select_residual_rotations(
         return rotation_matrices, residual_target_layers
 
     saved_layers_list = list(saved_target_layers)
+    print(f"Saved layers:{saved_layers_list}")
     if residual_target_layers is None:
         return rotation_matrices, saved_layers_list
+    print(f"Target layers:{residual_target_layers}")
 
     missing_layers = [layer for layer in residual_target_layers if layer not in saved_layers_list]
     if missing_layers:
@@ -141,6 +143,7 @@ def select_residual_rotations(
         )
 
     indices = [saved_layers_list.index(layer) for layer in residual_target_layers]
+    print(f"Rotation Mat Indexs:{indices}")
     return rotation_matrices[indices], residual_target_layers
 
 
