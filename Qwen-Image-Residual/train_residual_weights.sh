@@ -35,7 +35,6 @@ torchrun \
   --residual_origin_layer 1 \
   --residual_init 0.05 \
   --init_mode "constant" \
-  --residual_use_layernorm 1 \
   --residual_stop_grad 1 \
   --residual_rotation_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/Qwen-Image-Residual/output/procrustes_rotations/qwen_procrustes_rotations.pt \
   --residual_smoothness_weight 0.0

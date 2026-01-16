@@ -80,7 +80,6 @@ class SD3Transformer2DModel_Residual(nn.Module):
             target: torch.Tensor,
             origin: torch.Tensor,
             w: torch.Tensor,
-            use_layernorm: bool = True, # 这里参数名保留，但内部逻辑已修正
             stop_grad: bool = True,
             rotation_matrix: Optional[torch.Tensor] = None,
         ):
@@ -151,7 +150,6 @@ class SD3Transformer2DModel_Residual(nn.Module):
         residual_target_layers: Optional[List[int]] = None,
         residual_origin_layer: Optional[int] = None,
         residual_weights: Optional[Union[List[float], torch.Tensor]] = None,
-        residual_use_layernorm: bool = True,         # ⭐ 新增
         residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
     ) -> Union[torch.FloatTensor, Transformer2DModelOutput]:
 
@@ -246,7 +244,6 @@ class SD3Transformer2DModel_Residual(nn.Module):
                         encoder_hidden_states,
                         origin,
                         w,
-                        use_layernorm=residual_use_layernorm,
                         stop_grad=residual_stop_grad,
                         rotation_matrix=rotation,
                     )

@@ -100,7 +100,6 @@ def compute_total_loss(
     residual_target_layers: Optional[List[int]] = None,
     residual_origin_layer: Optional[int] = None,
     residual_weights: Optional[torch.Tensor] = None,
-    residual_use_layernorm: bool = True,
     residual_rotation_matrices: Optional[torch.Tensor] = None,
 ):
     device = x0.device
@@ -122,7 +121,6 @@ def compute_total_loss(
             residual_target_layers=residual_target_layers,
             residual_origin_layer=residual_origin_layer,
             residual_weights=residual_weights,
-            residual_use_layernorm=residual_use_layernorm,
             residual_rotation_matrices=residual_rotation_matrices,
         )
         v_pred = out["sample"]
@@ -367,7 +365,6 @@ def train(args):
             residual_target_layers=residual_target_layers,
             residual_origin_layer=residual_origin_layer,
             residual_weights=residual_weights,
-            residual_use_layernorm=args.residual_use_layernorm,
             residual_rotation_matrices=residual_rotation_matrices,
         )
 
@@ -454,7 +451,6 @@ def train(args):
                     "residual_target_layers": residual_target_layers,
                     "residual_origin_layer": residual_origin_layer,
                     "residual_weights": residual_weights.detach(),
-                    "residual_use_layernorm": args.residual_use_layernorm,
                     "residual_rotation_matrices": residual_rotation_matrices,
                 }
                 eval_model(
@@ -522,7 +518,6 @@ def main():
     parser.add_argument("--residual_init", type=float, default=0.0)
     parser.add_argument("--init_mode", type=str, default="constant")
     parser.add_argument("--residual_weights_ckpt", type=str, default=None)
-    parser.add_argument("--residual_use_layernorm", type=int, default=1)
     parser.add_argument("--residual_rotation_path", type=str, default=None)
     parser.add_argument(
         "--residual_smoothness_weight",
@@ -532,7 +527,6 @@ def main():
     )
 
     args = parser.parse_args()
-    args.residual_use_layernorm = bool(args.residual_use_layernorm)
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     train(args)

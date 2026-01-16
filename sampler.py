@@ -267,7 +267,6 @@ class StableDiffusion3Base():
         residual_target_layers: Optional[List[int]] = None,
         residual_origin_layer: Optional[int] = None,
         residual_weights: Optional[List[float]] = None,
-        residual_use_layernorm: bool = True,    # ⭐ 新增
         residual_rotation_matrices: Optional[torch.Tensor] = None,
     ):
         with autocast('cuda', enabled=(self.dtype == torch.float16 and torch.cuda.is_available())):
@@ -280,7 +279,6 @@ class StableDiffusion3Base():
                 residual_target_layers=residual_target_layers,
                 residual_origin_layer=residual_origin_layer,
                 residual_weights=residual_weights,
-                residual_use_layernorm=residual_use_layernorm,   # ⭐ Forward 参数传递
                 residual_rotation_matrices=residual_rotation_matrices,
             )['sample']
         return v
@@ -389,7 +387,6 @@ class SD3Euler(StableDiffusion3Base):
         residual_target_layers: Optional[List[int]] = None,
         residual_origin_layer: Optional[int] = None,
         residual_weights: Optional[List[float]] = None,
-        residual_use_layernorm: bool = True,  # ⭐ 新增
         residual_rotation_matrices: Optional[torch.Tensor] = None,
         residual_timestep_weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]] = None,
     ):
@@ -426,7 +423,6 @@ class SD3Euler(StableDiffusion3Base):
                 residual_target_layers=residual_target_layers,
                 residual_origin_layer=residual_origin_layer,
                 residual_weights=effective_residual_weights,
-                residual_use_layernorm=residual_use_layernorm,  # ⭐ 传递
                 residual_rotation_matrices=residual_rotation_matrices,
             )
 
@@ -436,7 +432,6 @@ class SD3Euler(StableDiffusion3Base):
                     residual_target_layers=residual_target_layers,
                     residual_origin_layer=residual_origin_layer,
                     residual_weights=effective_residual_weights,
-                    residual_use_layernorm=residual_use_layernorm,  # ⭐ 传递
                     residual_rotation_matrices=residual_rotation_matrices,
                 )
                 if cfg_scale != 1.0 else 0.0

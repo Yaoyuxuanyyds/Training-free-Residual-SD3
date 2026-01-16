@@ -99,7 +99,6 @@ def compute_total_loss(
     residual_target_layers: Optional[List[int]] = None,
     residual_origin_layer: Optional[int] = None,
     residual_weights: Optional[List[float]] = None,   
-    residual_use_layernorm: Optional[bool] = True,
 ):
     """
     仅计算 diffusion denoise MSE loss，用于 LoRA 微调。
@@ -125,7 +124,6 @@ def compute_total_loss(
             residual_target_layers=residual_target_layers,
             residual_origin_layer=residual_origin_layer,
             residual_weights=residual_weights,
-            residual_use_layernorm=residual_use_layernorm
         )
         v_pred = out["sample"]
         denoise_loss = F.mse_loss(v_pred, v_target)
@@ -300,7 +298,6 @@ def train(args):
                 residual_target_layers=args.residual_target_layers,
                 residual_origin_layer=args.residual_origin_layer,
                 residual_weights=args.residual_weights,
-                residual_use_layernorm=args.residual_use_layernorm
             )
 
             if scaler.is_enabled():
@@ -348,7 +345,6 @@ def train(args):
                     sample_cfg["residual_target_layers"] = args.residual_target_layers
                     sample_cfg["residual_origin_layer"] = args.residual_origin_layer
                     sample_cfg["residual_weights"] = args.residual_weights
-                    sample_cfg["residual_use_layernorm"] = args.residual_use_layernorm
                 benchmarks = eval_model(
                     args,
                     model=_wrap,
@@ -440,11 +436,9 @@ def main():
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
-    parser.add_argument("--residual_use_layernorm", type=int, default=1)
     
     
     args = parser.parse_args()
-    args.residual_use_layernorm = bool(args.residual_use_layernorm)
 
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
