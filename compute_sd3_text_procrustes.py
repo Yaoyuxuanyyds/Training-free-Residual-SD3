@@ -310,10 +310,10 @@ def run(args: argparse.Namespace):
         # SVD 分解求解正交普氏问题
         U, S, Vh = torch.linalg.svd(C, full_matrices=False)
         R = U.matmul(Vh)
-        if torch.det(R) < 0:
-            correction = torch.eye(R.shape[0], device=R.device, dtype=R.dtype)
-            correction[-1, -1] = -1
-            R = U.matmul(correction).matmul(Vh)
+        # if torch.det(R) < 0:
+        #     correction = torch.eye(R.shape[0], device=R.device, dtype=R.dtype)
+        #     correction[-1, -1] = -1
+        #     R = U.matmul(correction).matmul(Vh)
         rotations.append(R)
         
         # 打印拟合质量（F-范数残差参考）
@@ -373,7 +373,7 @@ def main():
     parser.add_argument(
         "--num-timesteps",
         type=int,
-        default=10,
+        default=5,
         help="Number of random timesteps to sample per sample when --timesteps is not set.",
     )
 

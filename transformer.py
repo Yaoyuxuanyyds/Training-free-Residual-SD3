@@ -104,6 +104,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
             t_norm = self._rms_norm_tokenwise(target_nograd)
             o_norm = self._rms_norm_tokenwise(origin_nograd)
             o_norm = o_norm - o_norm.mean(dim=-2, keepdim=True)
+            t_norm = t_norm - t_norm.mean(dim=-2, keepdim=True)
 
             if rotation_matrix is not None:
                 # 注意：如果 rotation_matrix 是 (D, D)，matmul 默认是最后两维运算，符合预期
