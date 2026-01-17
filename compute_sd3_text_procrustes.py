@@ -293,16 +293,15 @@ def run(args: argparse.Namespace):
     print("[PROCESS] Applying Row-wise RMSNorm and Column-wise Centering...")
     # 得到模拟推理分布后的 X
     X_ln = apply_simulated_rmsnorm(origin_chunks)
-    # X 全局列中心化
-    X_final = X_ln - X_ln.mean(dim=0, keepdim=True)
+    # Token-wise 中心化
+    X_final = X_ln - X_ln.mean(dim=-1, keepdim=True)
 
     rotations: List[torch.Tensor] = []
-
     # --- 阶段 3: 计算各层的正交旋转矩阵 ---
     for layer in target_layers:
         Y_ln = apply_simulated_rmsnorm(target_chunks[layer])
-        # Y 全局列中心化
-        Y_final = Y_ln - Y_ln.mean(dim=0, keepdim=True)
+        # Token-wise 中心化
+        Y_final = Y_ln - Y_ln.mean(dim=-1, keepdim=True)
 
         # 计算相关矩阵 C (使用 float32 保证 SVD 精度)
         C = X_final.t().matmul(Y_final).to(torch.float32)
@@ -310,10 +309,6 @@ def run(args: argparse.Namespace):
         # SVD 分解求解正交普氏问题
         U, S, Vh = torch.linalg.svd(C, full_matrices=False)
         R = U.matmul(Vh)
-        # if torch.det(R) < 0:
-        #     correction = torch.eye(R.shape[0], device=R.device, dtype=R.dtype)
-        #     correction[-1, -1] = -1
-        #     R = U.matmul(correction).matmul(Vh)
         rotations.append(R)
         
         # 打印拟合质量（F-范数残差参考）
@@ -331,7 +326,7 @@ def run(args: argparse.Namespace):
         "rotation_matrices": rotation_stack,
         "feature_dim": X_final.shape[1],
         "num_valid_tokens": X_final.shape[0],
-        "strategy": "row_rmsnorm_then_col_center_random_timestep",
+        "strategy": "row_rmsnorm_then_token_center_random_timestep",
         "timesteps": timesteps,
         "num_timesteps": args.num_timesteps,
     }

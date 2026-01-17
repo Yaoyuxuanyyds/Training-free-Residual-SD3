@@ -103,24 +103,23 @@ class SD3Transformer2DModel_Residual(nn.Module):
             # 2. 几何融合 (保持使用 RMSNorm 以保护语义方向)
             t_norm = self._rms_norm_tokenwise(target_nograd)
             o_norm = self._rms_norm_tokenwise(origin_nograd)
-            o_norm = o_norm - o_norm.mean(dim=-2, keepdim=True)
-            t_norm = t_norm - t_norm.mean(dim=-2, keepdim=True)
+            t_centered = t_norm - t_norm.mean(dim=-1, keepdim=True)
+            o_centered = o_norm - o_norm.mean(dim=-1, keepdim=True)
 
             if rotation_matrix is not None:
                 # 注意：如果 rotation_matrix 是 (D, D)，matmul 默认是最后两维运算，符合预期
-                o_norm = torch.matmul(o_norm, rotation_matrix)
+                o_centered = torch.matmul(o_centered, rotation_matrix)
 
             w = torch.clamp(w, min=0)
-            mixed = t_norm + w * o_norm
+            mixed = t_centered + w * o_centered
 
             # 3. 分布恢复 (CRITICAL FIX)
             # 必须先将 mixed 强制变为 均值0、方差1 的分布，
             # 才能正确地映射回 Target 的数值空间。
             # 这里不能用 RMSNorm，必须用类似 LayerNorm 的标准化逻辑（但不含 affine 参数）
-            
             mixed_mean = mixed.mean(dim=-1, keepdim=True)
             mixed_std = mixed.std(dim=-1, keepdim=True)
-            
+
             # 显式标准化：(x - u) / s
             # 加上 1e-6 防止除以 0
             mixed_normalized = (mixed - mixed_mean) / (mixed_std + 1e-6)
