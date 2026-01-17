@@ -251,13 +251,14 @@ class StableDiffusion3Base():
     #         return_dict=False
     #     )[0]
 
-    def predict_vector(self, z, t, prompt_emb, pooled_emb):
+    def predict_vector(self, z, t, prompt_emb, pooled_emb, text_mask=None):
         with autocast('cuda', enabled=(self.dtype == torch.float16 and torch.cuda.is_available())):
             v = self.denoiser(
                 hidden_states=z,
                 timestep=t,
                 pooled_projections=pooled_emb,
                 encoder_hidden_states=prompt_emb,
+                text_mask=text_mask,
                 return_dict=False
             )['sample']
         return v
@@ -268,6 +269,7 @@ class StableDiffusion3Base():
         residual_origin_layer: Optional[int] = None,
         residual_weights: Optional[List[float]] = None,
         residual_rotation_matrices: Optional[torch.Tensor] = None,
+        text_mask: Optional[torch.Tensor] = None,
     ):
         with autocast('cuda', enabled=(self.dtype == torch.float16 and torch.cuda.is_available())):
             v = self.denoiser(
@@ -276,6 +278,7 @@ class StableDiffusion3Base():
                 pooled_projections=pooled_emb,
                 encoder_hidden_states=prompt_emb,
                 return_dict=False,
+                text_mask=text_mask,
                 residual_target_layers=residual_target_layers,
                 residual_origin_layer=residual_origin_layer,
                 residual_weights=residual_weights,
@@ -331,8 +334,8 @@ class SD3Euler(StableDiffusion3Base):
         return weights * timestep_weight
 
     def inversion(self, src_img, prompts: List[str], NFE: int, cfg_scale: float = 1.0, batch_size: int = 1):
-        prompt_emb, pooled_emb, _ = self.encode_prompt(prompts, batch_size)
-        null_prompt_emb, null_pooled_emb, _ = self.encode_prompt([""], batch_size)
+        prompt_emb, pooled_emb, text_mask = self.encode_prompt(prompts, batch_size)
+        null_prompt_emb, null_pooled_emb, null_text_mask = self.encode_prompt([""], batch_size)
 
         src_img = src_img.to(device=self.device, dtype=self.dtype)
         with torch.no_grad():
@@ -347,8 +350,11 @@ class SD3Euler(StableDiffusion3Base):
         pbar = tqdm(timesteps[:-1], total=NFE, desc='SD3 Euler Inversion')
         for i, t in enumerate(pbar):
             timestep = t.expand(z.shape[0]).to(self.device)
-            pred_v = self.predict_vector(z, timestep, prompt_emb, pooled_emb)
-            pred_null_v = self.predict_vector(z, timestep, null_prompt_emb, null_pooled_emb) if cfg_scale != 1.0 else 0.0
+            pred_v = self.predict_vector(z, timestep, prompt_emb, pooled_emb, text_mask=text_mask)
+            pred_null_v = (
+                self.predict_vector(z, timestep, null_prompt_emb, null_pooled_emb, text_mask=null_text_mask)
+                if cfg_scale != 1.0 else 0.0
+            )
             step = steps[i]
             step_next = steps[i + 1]
             z = z + (step_next - step) * (pred_null_v + cfg_scale * (pred_v - pred_null_v))
@@ -357,8 +363,8 @@ class SD3Euler(StableDiffusion3Base):
     def sample(self, prompts: List[str], NFE: int, img_shape: Optional[Tuple[int]] = None, cfg_scale: float = 1.0, batch_size: int = 1, latent: Optional[torch.Tensor] = None):
         imgH, imgW = img_shape if img_shape is not None else (1024, 1024)
         with torch.no_grad():
-            prompt_emb, pooled_emb, _ = self.encode_prompt(prompts, batch_size)
-            null_prompt_emb, null_pooled_emb, _ = self.encode_prompt([""]*batch_size, batch_size)
+            prompt_emb, pooled_emb, text_mask = self.encode_prompt(prompts, batch_size)
+            null_prompt_emb, null_pooled_emb, null_text_mask = self.encode_prompt([""]*batch_size, batch_size)
         z = self.initialize_latent((imgH, imgW), batch_size) if latent is None else latent
 
         self.scheduler.set_timesteps(NFE, device=self.device)
@@ -368,8 +374,11 @@ class SD3Euler(StableDiffusion3Base):
         pbar = tqdm(timesteps, total=NFE, desc='SD3 Euler')
         for i, t in enumerate(pbar):
             timestep = t.expand(z.shape[0]).to(self.device)
-            pred_v = self.predict_vector(z, timestep, prompt_emb, pooled_emb)           # exp 
-            pred_null_v = self.predict_vector(z, timestep, null_prompt_emb, null_pooled_emb) if cfg_scale != 1.0 else 0.0
+            pred_v = self.predict_vector(z, timestep, prompt_emb, pooled_emb, text_mask=text_mask)           # exp 
+            pred_null_v = (
+                self.predict_vector(z, timestep, null_prompt_emb, null_pooled_emb, text_mask=null_text_mask)
+                if cfg_scale != 1.0 else 0.0
+            )
             step = steps[i]
             step_next = steps[i + 1] if i + 1 < NFE else 0.0
             z = z + (step_next - step) * (pred_null_v + cfg_scale * (pred_v - pred_null_v))
@@ -392,8 +401,8 @@ class SD3Euler(StableDiffusion3Base):
     ):
         imgH, imgW = img_shape if img_shape is not None else (1024, 1024)
         with torch.no_grad():
-            prompt_emb, pooled_emb, _ = self.encode_prompt(prompts, batch_size)
-            null_prompt_emb, null_pooled_emb, _ = self.encode_prompt([""]*batch_size, batch_size)
+            prompt_emb, pooled_emb, text_mask = self.encode_prompt(prompts, batch_size)
+            null_prompt_emb, null_pooled_emb, null_text_mask = self.encode_prompt([""]*batch_size, batch_size)
         z = self.initialize_latent((imgH, imgW), batch_size) if latent is None else latent
 
         self.scheduler.set_timesteps(NFE, device=self.device)
@@ -424,6 +433,7 @@ class SD3Euler(StableDiffusion3Base):
                 residual_origin_layer=residual_origin_layer,
                 residual_weights=effective_residual_weights,
                 residual_rotation_matrices=residual_rotation_matrices,
+                text_mask=text_mask,
             )
 
             pred_null_v = (
@@ -433,6 +443,7 @@ class SD3Euler(StableDiffusion3Base):
                     residual_origin_layer=residual_origin_layer,
                     residual_weights=effective_residual_weights,
                     residual_rotation_matrices=residual_rotation_matrices,
+                    text_mask=null_text_mask,
                 )
                 if cfg_scale != 1.0 else 0.0
             )

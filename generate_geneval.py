@@ -185,6 +185,27 @@ def main(args):
         )
         if args.residual_origin_layer is None and isinstance(meta, dict):
             args.residual_origin_layer = meta.get("origin_layer")
+        if isinstance(meta, dict) and ("mu_src" in meta or "mu_tgt" in meta):
+            mu_src = meta.get("mu_src")
+            mu_tgt = meta.get("mu_tgt")
+            if mu_src is not None and not torch.is_tensor(mu_src):
+                mu_src = torch.tensor(mu_src)
+            if mu_tgt is not None and not torch.is_tensor(mu_tgt):
+                mu_tgt = torch.tensor(mu_tgt)
+            if mu_tgt is not None and target_layers is not None:
+                saved_layers_list = list(target_layers)
+                selected_layers = (
+                    args.residual_target_layers
+                    if args.residual_target_layers is not None
+                    else saved_layers_list
+                )
+                indices = [saved_layers_list.index(layer) for layer in selected_layers]
+                mu_tgt = mu_tgt[indices]
+            residual_rotation_matrices = {
+                "rotation_matrices": residual_rotation_matrices,
+                "mu_src": mu_src,
+                "mu_tgt": mu_tgt,
+            }
 
     if args.residual_weights is None and args.residual_weights_path is not None:
         args.residual_weights = load_residual_weights(args.residual_weights_path)
