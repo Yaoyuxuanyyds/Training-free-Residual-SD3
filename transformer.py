@@ -34,6 +34,12 @@ class SD3Transformer2DModel_Residual(nn.Module):
         rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
         return x / rms
 
+    @staticmethod
+    def _masked_token_mean(x: torch.Tensor, mask: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+        mask = mask.to(dtype=x.dtype).unsqueeze(-1)
+        denom = mask.sum(dim=-2, keepdim=True).clamp_min(eps)
+        return (x * mask).sum(dim=-2, keepdim=True) / denom
+
     # ===============================================================
     #  改进 residual（支持 stopgrad + 可选 LN）
     # ===============================================================
@@ -84,6 +90,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
             rotation_matrix: Optional[torch.Tensor] = None,
             mu_src_glob: Optional[torch.Tensor] = None,
             mu_tgt_glob: Optional[torch.Tensor] = None,
+            text_mask: Optional[torch.Tensor] = None,
         ):
             """
             target/origin: [B, L, D]
@@ -108,12 +115,18 @@ class SD3Transformer2DModel_Residual(nn.Module):
             if mu_tgt_glob is not None:
                 t_centered = t_norm - mu_tgt_glob
             else:
-                t_centered = t_norm - t_norm.mean(dim=-2, keepdim=True)
+                if text_mask is not None:
+                    t_centered = t_norm - self._masked_token_mean(t_norm, text_mask)
+                else:
+                    t_centered = t_norm - t_norm.mean(dim=-2, keepdim=True)
 
             if mu_src_glob is not None:
                 o_centered = o_norm - mu_src_glob
             else:
-                o_centered = o_norm - o_norm.mean(dim=-2, keepdim=True)
+                if text_mask is not None:
+                    o_centered = o_norm - self._masked_token_mean(o_norm, text_mask)
+                else:
+                    o_centered = o_norm - o_norm.mean(dim=-2, keepdim=True)
 
             if rotation_matrix is not None:
                 # 注意：如果 rotation_matrix 是 (D, D)，matmul 默认是最后两维运算，符合预期
@@ -165,6 +178,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         residual_origin_layer: Optional[int] = None,
         residual_weights: Optional[Union[List[float], torch.Tensor]] = None,
         residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor, Dict[str, Any]]] = None,
+        text_mask: Optional[torch.Tensor] = None,
     ) -> Union[torch.FloatTensor, Transformer2DModelOutput]:
 
         height, width = hidden_states.shape[-2:]
@@ -332,6 +346,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
                         rotation_matrix=rotation,
                         mu_src_glob=mu_src,
                         mu_tgt_glob=mu_tgt,
+                        text_mask=text_mask,
                     )
 
             # ---------------- transformer compute ----------------
