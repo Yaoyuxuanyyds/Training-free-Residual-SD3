@@ -103,7 +103,8 @@ class SD3Transformer2DModel_Residual(nn.Module):
             # 2. 几何融合 (保持使用 RMSNorm 以保护语义方向)
             t_norm = self._rms_norm_tokenwise(target_nograd)
             o_norm = self._rms_norm_tokenwise(origin_nograd)
-            
+            o_norm = o_norm - o_norm.mean(dim=-2, keepdim=True)
+
             if rotation_matrix is not None:
                 # 注意：如果 rotation_matrix 是 (D, D)，matmul 默认是最后两维运算，符合预期
                 o_norm = torch.matmul(o_norm, rotation_matrix)
