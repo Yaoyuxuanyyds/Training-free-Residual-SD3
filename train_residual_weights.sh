@@ -19,7 +19,7 @@ CACHE_DIRS=(
   "/inspire/hdd/project/chineseculture/public/yuxuan/REPA-sd3/logs/cache/basic_content/blip3o60k-3-l333"
 )
 
-LOGDIR="./logs/learnable_residual"
+LOGDIR="./logs/learnable_residual_RN"
 
 torchrun \
   --nproc_per_node=4 \
@@ -44,5 +44,5 @@ torchrun \
   --residual_origin_layer 1 \
   --residual_init 0.05 \
   --init_mode "constant" \
-  --residual_rotation_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln.pt \
-  --residual_smoothness_weight 0.1
+  --residual_rotation_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_rn.pt \
+  --residual_smoothness_weight 0.0

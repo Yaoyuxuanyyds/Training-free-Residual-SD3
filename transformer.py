@@ -96,7 +96,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
                 target_nograd = target
                 origin_nograd = origin
 
-            # 1. 提取 Target 的锚点统计量 (分布指纹)
+            # 1. 提取 Target 的锚点统计量
             mu_tgt = target_nograd.mean(dim=-1, keepdim=True)
             sigma_tgt = target_nograd.std(dim=-1, keepdim=True)
 
@@ -144,7 +144,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         output_hidden_states: bool = False,
         output_text_inputs: bool = False,
         force_txt_grad: bool = False,
-        residual_stop_grad: bool = False,
+        residual_stop_grad: bool = True,
 
         # --- residual 参数 ---
         residual_target_layers: Optional[List[int]] = None,
