@@ -213,6 +213,18 @@ def run(args: argparse.Namespace):
         pair_iter = tqdm(pair_iter, total=total_pairs, desc="Collecting states")
 
     # --- 阶段 1: 收集原始隐藏状态 ---
+    if args.timesteps:
+        timesteps = [int(t) for t in args.timesteps]
+    else:
+        timesteps = None
+    if timesteps is not None:
+        print(f"[INFO] Using fixed timesteps for feature collection: {timesteps}")
+    else:
+        print(
+            "[INFO] Using random timesteps for feature collection: "
+            f"{args.num_timesteps} per sample"
+        )
+
     for pair_idx, image_data, prompt_value in pair_iter:
         prompt = _normalize_prompt(prompt_value)
         gt_pil = load_and_resize_pil(image_data, args.height, args.width)
@@ -224,41 +236,48 @@ def run(args: argparse.Namespace):
         if not args.use_padding_mask or token_mask.sum() == 0:
             token_mask = None
 
-        # 准备随机时间步，模拟训练/推理时的分布
-        gen_cpu = torch.Generator(device="cpu")
-        gen_cpu.manual_seed(int(args.seed or 0) + pair_idx)
-        timestep_idx = int(torch.randint(0, 1000, (1,), generator=gen_cpu).item())
+        if timesteps is None:
+            gen_cpu = torch.Generator(device="cpu")
+            gen_cpu.manual_seed(int(args.seed or 0) + pair_idx)
+            sample_timesteps = torch.randint(
+                0, 1000, (args.num_timesteps,), generator=gen_cpu
+            ).tolist()
+        else:
+            sample_timesteps = timesteps
 
-        gen_cuda = torch.Generator(device=device)
-        gen_cuda.manual_seed(int(args.seed or 0) + pair_idx)
-        z_t, t_tensor = build_noisy_latent_like_training(
-            base.scheduler, z0, timestep_idx, generator=gen_cuda
-        )
-
-        with torch.no_grad():
-            outputs = denoiser(
-                hidden_states=z_t.to(dtype=denoiser.dtype),
-                timestep=t_tensor,
-                encoder_hidden_states=prompt_emb.to(dtype=denoiser.dtype),
-                pooled_projections=pooled_emb.to(dtype=denoiser.dtype),
-                return_dict=False,
-                output_text_inputs=True,
+        for t_offset, timestep_idx in enumerate(sample_timesteps):
+            gen_cuda = torch.Generator(device=device)
+            gen_cuda.manual_seed(
+                int(args.seed or 0) + pair_idx * len(sample_timesteps) + t_offset
             )
-        
-        txt_input_states = outputs.get("txt_input_states")
-        
-        # 提取并掩码 Origin Layer
-        origin_state = txt_input_states[args.origin_layer][0].float().cpu()
-        if token_mask is not None:
-            origin_state = origin_state[token_mask.cpu()]
-        origin_chunks.append(origin_state)
+            z_t, t_tensor = build_noisy_latent_like_training(
+                base.scheduler, z0, timestep_idx, generator=gen_cuda
+            )
 
-        # 提取并掩码 Target Layers
-        for layer in target_layers:
-            target_state = txt_input_states[layer][0].float().cpu()
+            with torch.no_grad():
+                outputs = denoiser(
+                    hidden_states=z_t.to(dtype=denoiser.dtype),
+                    timestep=t_tensor,
+                    encoder_hidden_states=prompt_emb.to(dtype=denoiser.dtype),
+                    pooled_projections=pooled_emb.to(dtype=denoiser.dtype),
+                    return_dict=False,
+                    output_text_inputs=True,
+                )
+            
+            txt_input_states = outputs.get("txt_input_states")
+            
+            # 提取并掩码 Origin Layer
+            origin_state = txt_input_states[args.origin_layer][0].float().cpu()
             if token_mask is not None:
-                target_state = target_state[token_mask.cpu()]
-            target_chunks[layer].append(target_state)
+                origin_state = origin_state[token_mask.cpu()]
+            origin_chunks.append(origin_state)
+
+            # 提取并掩码 Target Layers
+            for layer in target_layers:
+                target_state = txt_input_states[layer][0].float().cpu()
+                if token_mask is not None:
+                    target_state = target_state[token_mask.cpu()]
+                target_chunks[layer].append(target_state)
 
     # --- 阶段 2: 模拟推理分布（行归一化） ---
     def apply_simulated_rmsnorm(chunks_list: List[torch.Tensor]) -> torch.Tensor:
@@ -291,6 +310,10 @@ def run(args: argparse.Namespace):
         # SVD 分解求解正交普氏问题
         U, S, Vh = torch.linalg.svd(C, full_matrices=False)
         R = U.matmul(Vh)
+        if torch.det(R) < 0:
+            correction = torch.eye(R.shape[0], device=R.device, dtype=R.dtype)
+            correction[-1, -1] = -1
+            R = U.matmul(correction).matmul(Vh)
         rotations.append(R)
         
         # 打印拟合质量（F-范数残差参考）
@@ -308,7 +331,9 @@ def run(args: argparse.Namespace):
         "rotation_matrices": rotation_stack,
         "feature_dim": X_final.shape[1],
         "num_valid_tokens": X_final.shape[0],
-        "strategy": "row_rmsnorm_then_col_center",
+        "strategy": "row_rmsnorm_then_col_center_random_timestep",
+        "timesteps": timesteps,
+        "num_timesteps": args.num_timesteps,
     }
     torch.save(payload, args.output)
     print(f"[DONE] Saved Procrustes rotations to {args.output}")
@@ -338,6 +363,19 @@ def main():
     parser.add_argument("--target-layers", type=int, nargs="+", default=None)
     parser.add_argument("--no-padding-mask", action="store_false", dest="use_padding_mask", default=True)
     parser.add_argument("--output", type=str, default="procrustes_rotations.pt")
+    parser.add_argument(
+        "--timesteps",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Fixed timesteps to sample per sample for Procrustes (overrides random sampling).",
+    )
+    parser.add_argument(
+        "--num-timesteps",
+        type=int,
+        default=10,
+        help="Number of random timesteps to sample per sample when --timesteps is not set.",
+    )
 
     args = parser.parse_args()
     run(args)
