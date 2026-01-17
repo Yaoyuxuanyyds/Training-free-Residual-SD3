@@ -278,6 +278,31 @@ def train(args):
             rotations, saved_layers, residual_target_layers
         )
         residual_rotation_matrices = rotations
+        if isinstance(meta, dict) and ("mu_src" in meta or "mu_tgt" in meta):
+            mu_src = meta.get("mu_src")
+            mu_tgt = meta.get("mu_tgt")
+            if mu_src is not None and not torch.is_tensor(mu_src):
+                mu_src = torch.tensor(mu_src)
+            if mu_tgt is not None and not torch.is_tensor(mu_tgt):
+                mu_tgt = torch.tensor(mu_tgt)
+            if mu_src is not None:
+                mu_src = mu_src.to(device=device, dtype=torch.float32)
+            if mu_tgt is not None:
+                mu_tgt = mu_tgt.to(device=device, dtype=torch.float32)
+                if saved_layers is not None:
+                    saved_layers_list = list(saved_layers)
+                    if residual_target_layers is None:
+                        selected_indices = list(range(len(saved_layers_list)))
+                    else:
+                        selected_indices = [
+                            saved_layers_list.index(layer) for layer in residual_target_layers
+                        ]
+                    mu_tgt = mu_tgt[selected_indices]
+            residual_rotation_matrices = {
+                "rotation_matrices": rotations,
+                "mu_src": mu_src,
+                "mu_tgt": mu_tgt,
+            }
 
     optimizer = torch.optim.AdamW(
         [{"params": [residual_weights_raw], "lr": args.lr, "weight_decay": args.wd}]

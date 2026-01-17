@@ -328,6 +328,8 @@ def run(args: argparse.Namespace):
         "origin_layer": args.origin_layer,
         "target_layers": target_layers,
         "rotation_matrices": rotation_stack,
+        "mu_src": mu_src_glob,
+        "mu_tgt": torch.stack(mu_tgt_globs, dim=0),
         "feature_dim": X_final.shape[1],
         "num_valid_tokens": X_final.shape[0],
         "strategy": "row_rmsnorm_then_token_center_random_timestep",
