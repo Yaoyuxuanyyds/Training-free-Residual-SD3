@@ -293,16 +293,20 @@ def run(args: argparse.Namespace):
     print("[PROCESS] Applying Row-wise RMSNorm and Column-wise Centering...")
     # 得到模拟推理分布后的 X
     X_ln = apply_simulated_rmsnorm(origin_chunks)
+    mu_src_glob = X_ln.mean(dim=0)
     # X 全局列中心化
-    X_final = X_ln - X_ln.mean(dim=0, keepdim=True)
+    X_final = X_ln - mu_src_glob.unsqueeze(0)
 
     rotations: List[torch.Tensor] = []
+    mu_tgt_globs: List[torch.Tensor] = []
 
     # --- 阶段 3: 计算各层的正交旋转矩阵 ---
     for layer in target_layers:
         Y_ln = apply_simulated_rmsnorm(target_chunks[layer])
+        mu_tgt_glob = Y_ln.mean(dim=0)
+        mu_tgt_globs.append(mu_tgt_glob)
         # Y 全局列中心化
-        Y_final = Y_ln - Y_ln.mean(dim=0, keepdim=True)
+        Y_final = Y_ln - mu_tgt_glob.unsqueeze(0)
 
         # 计算相关矩阵 C (使用 float32 保证 SVD 精度)
         C = X_final.t().matmul(Y_final).to(torch.float32)
@@ -329,6 +333,8 @@ def run(args: argparse.Namespace):
         "origin_layer": args.origin_layer,
         "target_layers": target_layers,
         "rotation_matrices": rotation_stack,
+        "mu_src": mu_src_glob,
+        "mu_tgt": torch.stack(mu_tgt_globs, dim=0),
         "feature_dim": X_final.shape[1],
         "num_valid_tokens": X_final.shape[0],
         "strategy": "row_rmsnorm_then_col_center_random_timestep",
