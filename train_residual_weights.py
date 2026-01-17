@@ -269,7 +269,7 @@ def train(args):
 
     residual_rotation_matrices = None
     if args.residual_rotation_path is not None:
-        rotations, saved_layers, _ = load_residual_procrustes(
+        rotations, saved_layers, meta = load_residual_procrustes(
             args.residual_rotation_path,
             device=device,
             dtype=torch.float32,
