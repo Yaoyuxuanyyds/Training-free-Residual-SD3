@@ -214,11 +214,16 @@ def run(args: argparse.Namespace):
 
     # --- 阶段 1: 收集原始隐藏状态 ---
     if args.timesteps:
-        timesteps = args.timesteps
+        timesteps = [int(t) for t in args.timesteps]
     else:
-        timesteps = [200, 500, 750, 800, 900, 950]
-    timesteps = [int(t) for t in timesteps]
-    print(f"[INFO] Using timesteps for feature collection: {timesteps}")
+        timesteps = None
+    if timesteps is not None:
+        print(f"[INFO] Using fixed timesteps for feature collection: {timesteps}")
+    else:
+        print(
+            "[INFO] Using random timesteps for feature collection: "
+            f"{args.num_timesteps} per sample"
+        )
 
     for pair_idx, image_data, prompt_value in pair_iter:
         prompt = _normalize_prompt(prompt_value)
@@ -231,9 +236,20 @@ def run(args: argparse.Namespace):
         if not args.use_padding_mask or token_mask.sum() == 0:
             token_mask = None
 
-        for t_offset, timestep_idx in enumerate(timesteps):
+        if timesteps is None:
+            gen_cpu = torch.Generator(device="cpu")
+            gen_cpu.manual_seed(int(args.seed or 0) + pair_idx)
+            sample_timesteps = torch.randint(
+                0, 1000, (args.num_timesteps,), generator=gen_cpu
+            ).tolist()
+        else:
+            sample_timesteps = timesteps
+
+        for t_offset, timestep_idx in enumerate(sample_timesteps):
             gen_cuda = torch.Generator(device=device)
-            gen_cuda.manual_seed(int(args.seed or 0) + pair_idx * len(timesteps) + t_offset)
+            gen_cuda.manual_seed(
+                int(args.seed or 0) + pair_idx * len(sample_timesteps) + t_offset
+            )
             z_t, t_tensor = build_noisy_latent_like_training(
                 base.scheduler, z0, timestep_idx, generator=gen_cuda
             )
@@ -315,8 +331,9 @@ def run(args: argparse.Namespace):
         "rotation_matrices": rotation_stack,
         "feature_dim": X_final.shape[1],
         "num_valid_tokens": X_final.shape[0],
-        "strategy": "row_rmsnorm_then_col_center_multi_timestep",
+        "strategy": "row_rmsnorm_then_col_center_random_timestep",
         "timesteps": timesteps,
+        "num_timesteps": args.num_timesteps,
     }
     torch.save(payload, args.output)
     print(f"[DONE] Saved Procrustes rotations to {args.output}")
@@ -351,7 +368,13 @@ def main():
         type=int,
         nargs="+",
         default=None,
-        help="Timesteps to sample per sample for Procrustes (default: 200 500 750 800 900 950).",
+        help="Fixed timesteps to sample per sample for Procrustes (overrides random sampling).",
+    )
+    parser.add_argument(
+        "--num-timesteps",
+        type=int,
+        default=10,
+        help="Number of random timesteps to sample per sample when --timesteps is not set.",
     )
 
     args = parser.parse_args()
