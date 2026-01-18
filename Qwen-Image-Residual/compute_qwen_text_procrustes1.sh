@@ -3,6 +3,6 @@ python compute_qwen_text_procrustes.py \
   --dataset blip3o60k \
   --datadir /inspire/hdd/project/chineseculture/public/yuxuan/datasets \
   --num_samples 5000 \
-  --origin_layer 1 \
-  --target_layer_start 2 \
-  --output /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/Qwen-Image-Residual/output/procrustes_rotations/qwen_procrustes_rotations-pro.pt
+  --origin_layer 30 \
+  --target_layer_start 31 \
+  --output /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/Qwen-Image-Residual/output/procrustes_rotations/qwen_procrustes_rotations-pro-o30.pt

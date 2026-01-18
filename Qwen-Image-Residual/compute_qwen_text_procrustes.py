@@ -245,12 +245,14 @@ def run(args: argparse.Namespace):
 
     print("[PROCESS] Applying Row-wise LN and Column-wise Centering...")
     X_ln = apply_simulated_ln(origin_chunks)
-    X_final = X_ln - X_ln.mean(dim=0, keepdim=True)
+    # X_final = X_ln - X_ln.mean(dim=0, keepdim=True)
+    X_final = X_ln
 
     rotations: List[torch.Tensor] = []
     for layer in target_layers:
         Y_ln = apply_simulated_ln(target_chunks[layer])
-        Y_final = Y_ln - Y_ln.mean(dim=0, keepdim=True)
+        # Y_final = Y_ln - Y_ln.mean(dim=0, keepdim=True)
+        Y_final = Y_ln
         
         C = X_final.t().matmul(Y_final).to(torch.float32)
         U, _, Vh = torch.linalg.svd(C, full_matrices=False)

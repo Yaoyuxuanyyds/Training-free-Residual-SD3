@@ -23,7 +23,7 @@ RES_ORIGIN=1
 
 RES_TARGET="$(seq -s ' ' 2 21)"
 
-RES_WEIGHT="$(printf '0.05 %.0s' $(seq 2 21))"
+RES_WEIGHT="$(printf '0.1 %.0s' $(seq 2 21))"
 
 
 
