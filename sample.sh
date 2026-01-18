@@ -12,7 +12,7 @@ IMGSIZE=1024
 BATCHSIZE=1
 
 
-SAVEDIR="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/generate/test3"
+SAVEDIR="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/generate/test5"
 
 
 ### -----------------------------
@@ -23,7 +23,7 @@ RES_ORIGIN=1
 
 RES_TARGET="$(seq -s ' ' 2 21)"
 
-RES_WEIGHT="$(printf '0.1 %.0s' $(seq 2 21))"
+RES_WEIGHT="$(printf '0.05 %.0s' $(seq 2 21))"
 
 
 
@@ -39,11 +39,11 @@ EXP_TARGET_SHORT="${FIRST_LAYER}to${LAST_LAYER}"
 # 权重统一就取第一个即可
 FIRST_WEIGHT=$(echo "$RES_WEIGHT" | awk '{print $1}')
 EXP_WEIGHT_SHORT="${FIRST_WEIGHT}"
-# SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm-Procruste"
+SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm-Procruste"
 # SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm-Procruste-exp-Pro"
 # SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm"
 # SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-${EXP_WEIGHT_SHORT}-LayerNorm-exp"
-SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-learned-LayerNorm-Procruste"
+# SAVENAME="target-${EXP_TARGET_SHORT}__origin-${RES_ORIGIN}__w-learned-LayerNorm-Procruste"
 
 FULL_SAVE_DIR="${SAVEDIR}/${SAVENAME}"
 mkdir -p "$FULL_SAVE_DIR"
@@ -66,11 +66,10 @@ python sample.py \
     --timestep_residual_weight_exp_alpha 0.0 \
     --residual_target_layers $RES_TARGET \
     --residual_origin_layer $RES_ORIGIN \
-    --residual_weights_path "/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/learnable_residual/sd3_residual_weights/residual_weights_step2000_final.pth" \
-    --residual_procrustes_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln.pt
-    # --residual_weights $RES_WEIGHT \
+    --residual_procrustes_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln.pt \
+    --residual_weights $RES_WEIGHT \
 
-
+    # --residual_weights_path "/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/learnable_residual/sd3_residual_weights/residual_weights_step2000_final.pth" \
 # A woman holding a Hello Kitty phone on her hands.
 
 # the word'START'written inchalk on asidewalk
