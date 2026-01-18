@@ -269,6 +269,7 @@ class StableDiffusion3Base():
         residual_weights: Optional[List[float]] = None,
         residual_use_layernorm: bool = True,    # ⭐ 新增
         residual_rotation_matrices: Optional[torch.Tensor] = None,
+        residual_token_mask: Optional[torch.Tensor] = None,
     ):
         with autocast('cuda', enabled=(self.dtype == torch.float16 and torch.cuda.is_available())):
             v = self.denoiser(
@@ -282,6 +283,7 @@ class StableDiffusion3Base():
                 residual_weights=residual_weights,
                 residual_use_layernorm=residual_use_layernorm,   # ⭐ Forward 参数传递
                 residual_rotation_matrices=residual_rotation_matrices,
+                residual_token_mask=residual_token_mask,
             )['sample']
         return v
 
@@ -392,12 +394,14 @@ class SD3Euler(StableDiffusion3Base):
         residual_use_layernorm: bool = True,  # ⭐ 新增
         residual_rotation_matrices: Optional[torch.Tensor] = None,
         residual_timestep_weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]] = None,
+        residual_token_mask: Optional[torch.Tensor] = None,
     ):
         imgH, imgW = img_shape if img_shape is not None else (1024, 1024)
         with torch.no_grad():
-            prompt_emb, pooled_emb, _ = self.encode_prompt(prompts, batch_size)
-            null_prompt_emb, null_pooled_emb, _ = self.encode_prompt([""]*batch_size, batch_size)
+            prompt_emb, pooled_emb, prompt_token_mask = self.encode_prompt(prompts, batch_size)
+            null_prompt_emb, null_pooled_emb, null_token_mask = self.encode_prompt([""]*batch_size, batch_size)
         z = self.initialize_latent((imgH, imgW), batch_size) if latent is None else latent
+        prompt_token_mask = residual_token_mask if residual_token_mask is not None else prompt_token_mask
 
         self.scheduler.set_timesteps(NFE, device=self.device)
         timesteps = self.scheduler.timesteps
@@ -428,6 +432,7 @@ class SD3Euler(StableDiffusion3Base):
                 residual_weights=effective_residual_weights,
                 residual_use_layernorm=residual_use_layernorm,  # ⭐ 传递
                 residual_rotation_matrices=residual_rotation_matrices,
+                residual_token_mask=prompt_token_mask,
             )
 
             pred_null_v = (
@@ -438,6 +443,7 @@ class SD3Euler(StableDiffusion3Base):
                     residual_weights=effective_residual_weights,
                     residual_use_layernorm=residual_use_layernorm,  # ⭐ 传递
                     residual_rotation_matrices=residual_rotation_matrices,
+                    residual_token_mask=null_token_mask,
                 )
                 if cfg_scale != 1.0 else 0.0
             )

@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional, Union
+import types
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.utils import is_torch_version
 from dataclasses import dataclass
@@ -14,6 +15,137 @@ from diffusers.models.modeling_outputs import Transformer2DModelOutput
 
 logger = logging.get_logger(__name__)
 
+def _chunked_feed_forward(ff: nn.Module, hidden_states: torch.Tensor, chunk_dim: int, chunk_size: int) -> torch.Tensor:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be a positive integer when using chunked feed-forward.")
+    return torch.cat(
+        [ff(chunk) for chunk in hidden_states.split(chunk_size, dim=chunk_dim)],
+        dim=chunk_dim,
+    )
+
+
+def _tokenwise_standardize(
+    values: torch.Tensor,
+    eps: float = 1e-6,
+    unbiased: bool = False,
+) -> torch.Tensor:
+    mean = values.mean(dim=-1, keepdim=True)
+    var = values.var(dim=-1, keepdim=True, unbiased=unbiased)
+    return (values - mean) / (var.sqrt() + eps)
+
+
+def _joint_transformer_block_forward_a2_pre(
+    self,
+    hidden_states: torch.FloatTensor,
+    encoder_hidden_states: torch.FloatTensor,
+    temb: torch.FloatTensor,
+    joint_attention_kwargs: Optional[Dict[str, Any]] = None,
+):
+    joint_attention_kwargs = joint_attention_kwargs or {}
+    joint_attention_kwargs = dict(joint_attention_kwargs)
+    residual_inject_cfg = joint_attention_kwargs.pop("residual_inject_cfg", None)
+
+    if self.use_dual_attention:
+        norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp, norm_hidden_states2, gate_msa2 = self.norm1(
+            hidden_states, emb=temb
+        )
+    else:
+        norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(hidden_states, emb=temb)
+
+    if self.context_pre_only:
+        norm_encoder_hidden_states = self.norm1_context(encoder_hidden_states, temb)
+        x_res = encoder_hidden_states
+    else:
+        x_res = encoder_hidden_states
+        use_inject = bool(residual_inject_cfg and residual_inject_cfg.get("enable", False))
+        if use_inject:
+            origin_context_states = residual_inject_cfg.get("origin_context_states")
+            rotation_matrix = residual_inject_cfg.get("rotation_matrix")
+            weight = residual_inject_cfg.get("weight")
+            token_mask = residual_inject_cfg.get("token_mask")
+            standardize_eps = residual_inject_cfg.get("standardize_eps", 1e-6)
+            standardize_unbiased = residual_inject_cfg.get("standardize_unbiased", False)
+
+            if origin_context_states is None or weight is None:
+                use_inject = False
+
+        if use_inject:
+            stop_grad = residual_inject_cfg.get("stop_grad", False)
+            x_std_source = x_res.detach() if stop_grad else x_res
+            o_std_source = origin_context_states.detach() if stop_grad else origin_context_states
+            x_std = _tokenwise_standardize(x_std_source, eps=standardize_eps, unbiased=standardize_unbiased)
+            o_std = _tokenwise_standardize(o_std_source, eps=standardize_eps, unbiased=standardize_unbiased)
+            if rotation_matrix is not None:
+                o_std = torch.matmul(o_std, rotation_matrix)
+            delta = o_std * weight
+            if token_mask is not None:
+                delta = delta * token_mask[..., None]
+            x_prime = x_std + delta
+            norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.norm1_context(
+                x_prime, emb=temb
+            )
+        else:
+            norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.norm1_context(
+                encoder_hidden_states, emb=temb
+            )
+
+    # Attention.
+    attn_output, context_attn_output = self.attn(
+        hidden_states=norm_hidden_states,
+        encoder_hidden_states=norm_encoder_hidden_states,
+        **joint_attention_kwargs,
+    )
+
+    # Process attention outputs for the `hidden_states`.
+    attn_output = gate_msa.unsqueeze(1) * attn_output
+    hidden_states = hidden_states + attn_output
+
+    if self.use_dual_attention:
+        attn_output2 = self.attn2(hidden_states=norm_hidden_states2, **joint_attention_kwargs)
+        attn_output2 = gate_msa2.unsqueeze(1) * attn_output2
+        hidden_states = hidden_states + attn_output2
+
+    norm_hidden_states = self.norm2(hidden_states)
+    norm_hidden_states = norm_hidden_states * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
+    if self._chunk_size is not None:
+        # "feed_forward_chunk_size" can be used to save memory
+        ff_output = _chunked_feed_forward(self.ff, norm_hidden_states, self._chunk_dim, self._chunk_size)
+    else:
+        ff_output = self.ff(norm_hidden_states)
+    ff_output = gate_mlp.unsqueeze(1) * ff_output
+
+    hidden_states = hidden_states + ff_output
+
+    # Process attention outputs for the `encoder_hidden_states`.
+    if self.context_pre_only:
+        encoder_hidden_states = None
+    else:
+        context_attn_output = c_gate_msa.unsqueeze(1) * context_attn_output
+        encoder_hidden_states = x_res + context_attn_output
+
+        norm_encoder_hidden_states = self.norm2_context(encoder_hidden_states)
+        norm_encoder_hidden_states = norm_encoder_hidden_states * (1 + c_scale_mlp[:, None]) + c_shift_mlp[:, None]
+        if self._chunk_size is not None:
+            # "feed_forward_chunk_size" can be used to save memory
+            context_ff_output = _chunked_feed_forward(
+                self.ff_context, norm_encoder_hidden_states, self._chunk_dim, self._chunk_size
+            )
+        else:
+            context_ff_output = self.ff_context(norm_encoder_hidden_states)
+        encoder_hidden_states = encoder_hidden_states + c_gate_mlp.unsqueeze(1) * context_ff_output
+
+    return encoder_hidden_states, hidden_states
+
+
+def _patch_joint_transformer_blocks(blocks: nn.ModuleList):
+    for block in blocks:
+        if getattr(block, "_a2_pre_patched", False):
+            continue
+        if not hasattr(block, "norm1_context") or not hasattr(block, "attn"):
+            continue
+        block.forward = types.MethodType(_joint_transformer_block_forward_a2_pre, block)
+        block._a2_pre_patched = True
+
 
 
 class SD3Transformer2DModel_Residual(nn.Module):
@@ -21,6 +153,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         super().__init__()
         self.base_model = base_model
         self.dtype = base_model.dtype
+        _patch_joint_transformer_blocks(self.base_model.transformer_blocks)
 
     def to(self, *args, **kwargs):
         self.base_model = self.base_model.to(*args, **kwargs)
@@ -106,6 +239,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         residual_weights: Optional[Union[List[float], torch.Tensor]] = None,
         residual_use_layernorm: bool = True,         # ⭐ 新增
         residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        residual_token_mask: Optional[torch.Tensor] = None,
     ) -> Union[torch.FloatTensor, Transformer2DModelOutput]:
 
         height, width = hidden_states.shape[-2:]
@@ -175,12 +309,16 @@ class SD3Transformer2DModel_Residual(nn.Module):
             if output_text_inputs and not is_skip:
                 txt_input_states_list.append(encoder_hidden_states)
 
+            block_joint_attention_kwargs = joint_attention_kwargs
             if use_residual:
                 pre_encoder_states.append(encoder_hidden_states)
 
                 if index_block in residual_target_layers:
                     tid = residual_target_layers.index(index_block)
-                    w = residual_weights[tid]
+                    w = residual_weights[tid].to(
+                        device=encoder_hidden_states.device,
+                        dtype=encoder_hidden_states.dtype,
+                    )
 
                     # pick origin state
                     if 0 <= residual_origin_layer < len(pre_encoder_states):
@@ -193,16 +331,18 @@ class SD3Transformer2DModel_Residual(nn.Module):
                             f"[Residual] Shape mismatch: origin={origin.shape} vs target={encoder_hidden_states.shape}"
                         )
 
-                    # --------- 改进版 residual 应用 ---------
                     rotation = residual_rotations[tid] if residual_rotations is not None else None
-                    encoder_hidden_states = self._apply_residual(
-                        encoder_hidden_states,
-                        origin,
-                        w,
-                        use_layernorm=residual_use_layernorm,
-                        stop_grad=residual_stop_grad,
-                        rotation_matrix=rotation,
-                    )
+                    block_joint_attention_kwargs = dict(joint_attention_kwargs or {})
+                    block_joint_attention_kwargs["residual_inject_cfg"] = {
+                        "enable": True,
+                        "origin_context_states": origin,
+                        "rotation_matrix": rotation,
+                        "weight": w,
+                        "token_mask": residual_token_mask,
+                        "standardize_eps": 1e-6,
+                        "standardize_unbiased": False,
+                        "stop_grad": residual_stop_grad,
+                    }
 
             # ---------------- transformer compute ----------------
             if torch.is_grad_enabled() and self.base_model.gradient_checkpointing and not is_skip:
@@ -214,14 +354,18 @@ class SD3Transformer2DModel_Residual(nn.Module):
                 ckpt_kwargs = {}
                 encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block),
-                    hidden_states, encoder_hidden_states, temb, joint_attention_kwargs, **ckpt_kwargs
+                    hidden_states,
+                    encoder_hidden_states,
+                    temb,
+                    block_joint_attention_kwargs,
+                    **ckpt_kwargs,
                 )
             elif not is_skip:
                 encoder_hidden_states, hidden_states = block(
                     hidden_states=hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
                     temb=temb,
-                    joint_attention_kwargs=joint_attention_kwargs,
+                    joint_attention_kwargs=block_joint_attention_kwargs,
                 )
 
             if output_hidden_states:
@@ -268,6 +412,7 @@ class SD3Transformer2DModel_Vanilla(nn.Module):
     def __init__(self, base_model):
         super().__init__()
         self.base_model = base_model
+        _patch_joint_transformer_blocks(self.base_model.transformer_blocks)
 
     def to(self, *args, **kwargs):
         # 将当前模块和子模块（尤其是 base_model）都转移到 device/dtype
@@ -352,6 +497,7 @@ class SD3Transformer2DModel_REPA(nn.Module):
         super().__init__()
         self.base_model = base_model
         self.dtype = base_model.dtype
+        _patch_joint_transformer_blocks(self.base_model.transformer_blocks)
         
 
     def to(self, *args, **kwargs):

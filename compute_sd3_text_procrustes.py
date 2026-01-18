@@ -274,19 +274,15 @@ def run(args: argparse.Namespace):
             processed.append((x - mu) / st)
         return torch.cat(processed, dim=0)
 
-    print("[PROCESS] Applying Row-wise LN and Column-wise Centering...")
-    # 得到模拟推理分布后的 X
-    X_ln = apply_simulated_ln(origin_chunks)
-    # X 全局列中心化
-    X_final = X_ln - X_ln.mean(dim=0, keepdim=True)
+    print("[PROCESS] Applying Row-wise LN (token-wise standardization) ...")
+    # 得到模拟推理分布后的 X（仅做 token-wise 标准化）
+    X_final = apply_simulated_ln(origin_chunks)
 
     rotations: List[torch.Tensor] = []
 
     # --- 阶段 3: 计算各层的正交旋转矩阵 ---
     for layer in target_layers:
-        Y_ln = apply_simulated_ln(target_chunks[layer])
-        # Y 全局列中心化
-        Y_final = Y_ln - Y_ln.mean(dim=0, keepdim=True)
+        Y_final = apply_simulated_ln(target_chunks[layer])
 
         # 计算相关矩阵 C (使用 float32 保证 SVD 精度)
         C = X_final.t().matmul(Y_final).to(torch.float32)
@@ -311,7 +307,7 @@ def run(args: argparse.Namespace):
         "rotation_matrices": rotation_stack,
         "feature_dim": X_final.shape[1],
         "num_valid_tokens": X_final.shape[0],
-        "strategy": "row_ln_then_col_center",
+        "strategy": "row_ln_only",
     }
     torch.save(payload, args.output)
     print(f"[DONE] Saved Procrustes rotations to {args.output}")
