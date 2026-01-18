@@ -73,11 +73,10 @@ class SD3Transformer2DModel_Residual(nn.Module):
         else:
             mixed = t_norm * (1 - w)
 
-        # --- optional LN ---
-        if use_layernorm:
-            mixed = torch.nn.functional.layer_norm(
-                mixed, normalized_shape=mixed.shape[-1:], eps=1e-6
-            )
+        # --- restandardize ---
+        mixed = torch.nn.functional.layer_norm(
+            mixed, normalized_shape=mixed.shape[-1:], eps=1e-6
+        )
 
         # --- restore original scale ---
         return mixed * t_std + t_mean
