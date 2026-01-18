@@ -12,9 +12,9 @@ This document describes the implementation of the **LN + Rescale + Orthogonal Pr
 - Collects per-layer **text input states** (the `encoder_hidden_states` entering each transformer block).
 - For every target layer `i` (default: layers `2..last`), solves the **Orthogonal Procrustes** problem:
   \[
-  \min_R \|\bar{X}R - \bar{Y}\|_F^2, \; \text{s.t.}\; R^\top R = I
+  \min_R \|XR - Y\|_F^2, \; \text{s.t.}\; R^\top R = I
   \]
-  where `X` is the origin layer token set and `Y` is the target layer token set (both centered).
+  where `X` is the origin layer token set and `Y` is the target layer token set, each **token-wise standardized**.
 - For each sample, the script **randomly samples a timestep index** (no fixed `timestep_idx`).
 
 ### Output format
@@ -25,10 +25,8 @@ The script saves a `.pt` file with:
   "target_layers": List[int],
   "rotation_matrices": Tensor[num_layers, d, d],
   "feature_dim": int,
-  "num_samples": int,
   "num_valid_tokens": int,
-  "timestep_idx": int,
-  "use_padding_mask": bool,
+  "strategy": str,
 }
 ```
 
