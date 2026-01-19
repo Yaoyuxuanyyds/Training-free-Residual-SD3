@@ -12,6 +12,7 @@ import random
 # -------------------------- 直接导入Flux残差相关模块（无需重写）--------------------------
 from generate_image_res import FluxPipelineWithRES
 from flux_transformer_res import FluxTransformer2DModel_RES
+from util import load_residual_procrustes, select_residual_rotations, load_residual_weights
 
 def set_seed(seed):
     """固定随机种子，保证结果可复现"""
@@ -33,7 +34,8 @@ class FluxResGenerator:
         model_dir,
         residual_target_layers=None,
         residual_origin_layer=None,
-        residual_weight=0.1,  # Flux残差权重（原Qwen的residual_weights改为单权重，与Flux一致）
+        residual_weights=None,
+        residual_rotation_matrices=None,
         cfg=3.5,  # Flux默认引导尺度（原Qwen的4.0调整为Flux推荐值）
         steps=50,
         width=1024,
@@ -73,7 +75,8 @@ class FluxResGenerator:
         self.residual_config = {
             "residual_target_layers": residual_target_layers,
             "residual_origin_layer": residual_origin_layer,
-            "residual_weight": residual_weight,
+            "residual_weights": residual_weights,
+            "residual_rotation_matrices": residual_rotation_matrices,
         }
 
     def generate(self, prompt, seed):
@@ -134,10 +137,12 @@ def parse_args():
     )
     parser.add_argument("--output_prefix", type=str, default="flux_res_t2i")  # 前缀改为Flux残差标识
 
-    # 残差参数（与Flux代码对齐，删除原Qwen的residual_weights，改为单权重）
-    parser.add_argument("--residual_target_layers", type=int, nargs="+", default=[6,7,8,9,10])
-    parser.add_argument("--residual_origin_layer", type=int, default=1)
-    parser.add_argument("--residual_weight", type=float, default=0.1)  # Flux残差单权重
+    # 残差参数（与SD3一致）
+    parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
+    parser.add_argument("--residual_origin_layer", type=int, default=None)
+    parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
+    parser.add_argument("--residual_weights_path", type=str, default=None)
+    parser.add_argument("--residual_procrustes_path", type=str, default=None)
 
     # 多卡参数（保留原逻辑，支持多GPU分片）
     parser.add_argument("--world_size", type=int, default=1)
@@ -157,12 +162,30 @@ def main(opt):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[Rank {opt.rank}] Device={device}, world_size={opt.world_size}")
 
+    residual_rotation_matrices = None
+    if opt.residual_procrustes_path is not None:
+        residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
+            opt.residual_procrustes_path
+        )
+        residual_rotation_matrices, opt.residual_target_layers = select_residual_rotations(
+            residual_rotation_matrices, target_layers, opt.residual_target_layers
+        )
+        if opt.residual_origin_layer is None and isinstance(meta, dict):
+            opt.residual_origin_layer = meta.get("origin_layer")
+
+    if opt.residual_weights is None and opt.residual_weights_path is not None:
+        opt.residual_weights = load_residual_weights(opt.residual_weights_path).tolist()
+        print(f"Residual weights: {opt.residual_weights}")
+        print(f"Num res weights: {len(opt.residual_weights)}")
+        print(f"Num res targets: {len(opt.residual_target_layers) if opt.residual_target_layers else 0}")
+
     # 初始化Flux残差生成器（替换原Qwen生成器）
     generator = FluxResGenerator(
         model_dir=opt.model_dir,
         residual_target_layers=opt.residual_target_layers,
         residual_origin_layer=opt.residual_origin_layer,
-        residual_weight=opt.residual_weight,
+        residual_weights=opt.residual_weights,
+        residual_rotation_matrices=residual_rotation_matrices,
         cfg=opt.cfg,
         steps=opt.steps,
         width=opt.width,
