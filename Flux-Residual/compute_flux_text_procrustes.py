@@ -150,6 +150,24 @@ def _build_bucket_edges(num_train_timesteps: int, num_buckets: int) -> List[int]
     return edges
 
 
+def vae_latent_to_flux_tokens(z):
+    """
+    z: [B, 16, 128, 128]
+    return: [B, 4096, 64]
+    """
+    B, C, H, W = z.shape
+    assert C == 16
+    assert H % 2 == 0 and W % 2 == 0
+
+    # 2×2 patch
+    z = z.reshape(B, C, H // 2, 2, W // 2, 2)
+    z = z.permute(0, 2, 4, 1, 3, 5)          # [B, H/2, W/2, C, 2, 2]
+    z = z.reshape(B, (H // 2) * (W // 2), C * 4)
+
+    return z
+
+
+
 def run(args: argparse.Namespace):
     if args.seed is not None:
         random.seed(args.seed)
@@ -183,7 +201,9 @@ def run(args: argparse.Namespace):
         guidance = torch.full([1], args.guidance_scale, device=device, dtype=torch.float32)
 
     dataset = _build_dataset(args)
-    num_layers = len(pipe.transformer.base_model.transformer_blocks)
+    # num_layers = len(pipe.transformer.base_model.transformer_blocks)
+    num_layers = 19
+    
     if args.target_layers:
         target_layers = sorted(set(args.target_layers))
     else:
@@ -239,8 +259,7 @@ def run(args: argparse.Namespace):
             device,
             None,
         )
-        if z0.shape != latents_prepare.shape:
-            z0 = latents_prepare
+
 
         for bucket_idx in range(num_buckets):
             start = bucket_edges[bucket_idx]
@@ -257,6 +276,9 @@ def run(args: argparse.Namespace):
             z_t, t_tensor = build_noisy_latent_like_training(
                 pipe.scheduler, z0, timestep_idx, generator=gen_cuda
             )
+
+            z_t = vae_latent_to_flux_tokens(z_t)              # [1,4096,64]
+
 
             with torch.no_grad():
                 outputs = pipe.transformer(
@@ -345,32 +367,32 @@ def run(args: argparse.Namespace):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, required=True)
+    parser.add_argument("--model", type=str, default="/inspire/hdd/project/chineseculture/yaoyuxuan-CZXS25220085/p-yaoyuxuan/REPA-SD3-1/flux/FLUX.1-dev")
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--precision", type=str, default="auto", choices=["auto", "fp16", "bf16", "fp32"])
+    parser.add_argument("--precision", type=str, default="fp32", choices=["auto", "fp16", "bf16", "fp32"])
 
-    parser.add_argument("--dataset", type=str, nargs="+", default=None)
-    parser.add_argument("--datadir", type=str, default=None)
+    parser.add_argument("--dataset", type=str, nargs="+", default=["blip3o60k"])
+    parser.add_argument("--datadir", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/datasets")
     parser.add_argument("--num-samples", type=int, default=-1)
     parser.add_argument("--dataset-train", action="store_true")
 
     parser.add_argument("--prompt", type=str, default=None)
     parser.add_argument("--image", type=str, default=None)
 
-    parser.add_argument("--origin-layer", type=int, required=True)
-    parser.add_argument("--target-layer-start", type=int, default=None)
+    parser.add_argument("--origin-layer", type=int, default=1)
+    parser.add_argument("--target-layer-start", type=int, default=2)
     parser.add_argument("--target-layers", type=int, nargs="+", default=None)
     parser.add_argument("--no-padding-mask", action="store_false", dest="use_padding_mask", default=True)
 
     parser.add_argument("--height", type=int, default=1024)
     parser.add_argument("--width", type=int, default=1024)
-    parser.add_argument("--max-sequence-length", type=int, default=512)
+    parser.add_argument("--max-sequence-length", type=int, default=256)
 
     parser.add_argument("--timestep-buckets", type=int, default=1)
     parser.add_argument("--col-center", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--guidance-scale", type=float, default=3.5)
-    parser.add_argument("--output", type=str, required=True)
+    parser.add_argument("--output", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/Flux-Residual/logs/procrustes_rotations/procrustes_rotations_coco5k_ln_t1.pt")
 
     args = parser.parse_args()
     run(args)

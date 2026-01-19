@@ -370,8 +370,8 @@ def main():
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--precision", type=str, default="auto", choices=["auto", "fp16", "bf16", "fp32"])
 
-    parser.add_argument("--dataset", type=str, nargs="+", default=None)
-    parser.add_argument("--datadir", type=str, default=None)
+    parser.add_argument("--dataset", type=str, nargs="+", default=["blip3o60k"])
+    parser.add_argument("--datadir", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/datasets")
     parser.add_argument("--num-samples", type=int, default=-1)
     parser.add_argument("--dataset-train", action="store_true")
 
