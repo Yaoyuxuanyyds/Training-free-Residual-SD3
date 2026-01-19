@@ -57,17 +57,22 @@ def precompute_and_save_features(
 
         x0 = encode_image_to_latent(pipe, imgs)
 
-        prompt_emb, pooled_emb, text_ids = pipe.encode_prompt(
+        prompt_outputs = pipe.encode_prompt(
             prompt=list(captions),
             device=device,
             num_images_per_prompt=1,
             max_sequence_length=args.max_sequence_length,
             lora_scale=None,
         )
+        if len(prompt_outputs) == 4:
+            prompt_emb, pooled_emb, text_ids, token_mask = prompt_outputs
+        else:
+            raise ValueError("encode_prompt did not return token_mask for Flux cache precompute.")
 
         prompt_emb = prompt_emb.to(dtype=cache_dtype).cpu()
         pooled_emb = pooled_emb.to(dtype=cache_dtype).cpu()
         text_ids = text_ids.cpu()
+        token_mask = token_mask.cpu()
         x0 = x0.to(dtype=cache_dtype).cpu()
 
         for j in range(x0.shape[0]):
@@ -78,6 +83,7 @@ def precompute_and_save_features(
                     "prompt_emb": prompt_emb[j],
                     "pooled_emb": pooled_emb[j],
                     "text_ids": text_ids[j],
+                    "token_mask": token_mask[j],
                     "index": idx_global,
                 }
             )
