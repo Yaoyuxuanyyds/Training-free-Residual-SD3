@@ -10,6 +10,7 @@ from typing import List, Optional, Union
 # -------------------------- 复用geneval的Pipeline（直接导入）--------------------------
 from generate_image_res import FluxPipelineWithRES
 from flux_transformer_res import FluxTransformer2DModel_RES
+from util import load_residual_procrustes, select_residual_rotations, load_residual_weights
 
 # -------------------------- 工具函数（不变）--------------------------
 def set_seed(seed):
@@ -49,14 +50,20 @@ if __name__ == "__main__":
                         help="Flux模型本地路径")
     parser.add_argument("--save_dir", type=str, required=True, help="DPG输出目录（保存2x2网格图）")
     parser.add_argument("--prompt_dir", type=str, required=True, help="DPG prompt文件目录（.txt格式）")
+    parser.add_argument("--world_size", type=int, default=1)
+    parser.add_argument("--rank", type=int, default=0)
 
-    # 残差参数（对齐geneval）
-    parser.add_argument("--residual_target_layers", type=int, nargs="+", default=[6,7,8,9,10],
+    # 残差参数（与SD3一致）
+    parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None,
                         help="残差目标层索引列表（双流块索引）")
-    parser.add_argument("--residual_origin_layer", type=int, default=1,
+    parser.add_argument("--residual_origin_layer", type=int, default=None,
                         help="残差源层索引（必须是双流块索引）")
-    parser.add_argument("--residual_weight", type=float, default=0.1,
-                        help="残差叠加权重（建议0.1~0.5）")
+    parser.add_argument("--residual_weights", type=float, nargs="+", default=None,
+                        help="残差叠加权重（支持多层权重）")
+    parser.add_argument("--residual_weights_path", type=str, default=None,
+                        help="从文件加载学习得到的残差权重")
+    parser.add_argument("--residual_procrustes_path", type=str, default=None,
+                        help="Procrustes旋转矩阵路径")
 
     args = parser.parse_args()
     set_seed(args.seed)  # 全局基础seed=42
@@ -92,11 +99,32 @@ if __name__ == "__main__":
             for param in module.parameters():
                 param.requires_grad = False
 
+    residual_rotation_matrices = None
+    residual_rotation_meta = None
+    if args.residual_procrustes_path is not None:
+        residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
+            args.residual_procrustes_path
+        )
+        residual_rotation_matrices, args.residual_target_layers = select_residual_rotations(
+            residual_rotation_matrices, target_layers, args.residual_target_layers
+        )
+        if args.residual_origin_layer is None and isinstance(meta, dict):
+            args.residual_origin_layer = meta.get("origin_layer")
+        residual_rotation_meta = meta
+
+    if args.residual_weights is None and args.residual_weights_path is not None:
+        args.residual_weights = load_residual_weights(args.residual_weights_path).tolist()
+        print(f"Residual weights: {args.residual_weights}")
+        print(f"Num res weights: {len(args.residual_weights)}")
+        print(f"Num res targets: {len(args.residual_target_layers) if args.residual_target_layers else 0}")
+
     # -------------------------- 残差配置--------------------------
     residual_config = {
         "residual_target_layers": args.residual_target_layers,
         "residual_origin_layer": args.residual_origin_layer,
-        "residual_weight": args.residual_weight,
+        "residual_weights": args.residual_weights,
+        "residual_rotation_matrices": residual_rotation_matrices,
+        "residual_rotation_meta": residual_rotation_meta,
     }
 
     # -------------------------- DPG核心流程（固定seed=42~45）--------------------------
@@ -104,6 +132,8 @@ if __name__ == "__main__":
 
     # 扫描prompt文件（单卡处理所有prompt）
     txt_files = sorted(glob.glob(os.path.join(args.prompt_dir, "*.txt")))
+    if args.world_size > 1:
+        txt_files = [f for i, f in enumerate(txt_files) if i % args.world_size == args.rank]
     total_prompts = len(txt_files)
     print(f"[DPG] 单卡运行，共处理 {total_prompts} 个prompt")
     print(f"[Seed配置] 每个prompt的4个样本seed固定为：{args.seed}、{args.seed+1}、{args.seed+2}、{args.seed+3}")
@@ -128,7 +158,11 @@ if __name__ == "__main__":
 
         print(f"\n[DPG] 生成进度: {prompt_idx+1}/{total_prompts} | {name}")
         print(f"[Prompt] {prompt[:100]}..." if len(prompt) > 100 else f"[Prompt] {prompt}")
-        print(f"[Residual] 源层: {residual_config['residual_origin_layer']} | 目标层: {residual_config['residual_target_layers']} | 权重: {residual_config['residual_weight']}")
+        print(
+            f"[Residual] 源层: {residual_config['residual_origin_layer']} | "
+            f"目标层: {residual_config['residual_target_layers']} | "
+            f"权重: {residual_config['residual_weights']}"
+        )
 
         # 生成4张图像（seed固定为42、43、44、45，不叠加任何索引）
         with torch.inference_mode():

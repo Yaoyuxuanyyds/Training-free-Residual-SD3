@@ -42,54 +42,6 @@ def get_qwen_transform(size=512):
     return transform
 
 
-def build_text_token_nonpad_mask(
-    feats: torch.Tensor,
-    *,
-    clip_token_length: int = 77,
-    eps: float = 1e-6,
-) -> torch.Tensor:
-    """Return a boolean mask indicating non-padding tokens for SD3 text features."""
-
-    if feats.dim() == 2:
-        feats_3d = feats.unsqueeze(0)
-        squeeze = True
-    elif feats.dim() == 3:
-        feats_3d = feats
-        squeeze = False
-    else:
-        raise ValueError(
-            f"Expected text features of shape (L, D) or (B, L, D), got {feats.shape}"
-        )
-
-    # Padding tokens share identical embeddings with the final token for the T5
-    # branch and with the last CLIP token inside the 77-token window. We detect
-    # such duplicates using a small numerical tolerance.
-    B, L, _ = feats_3d.shape
-    ref_last = feats_3d[:, -1:, :]
-    diff_last = torch.amax(torch.abs(feats_3d - ref_last), dim=-1)
-    pad_mask = diff_last < eps
-
-    if clip_token_length is not None and clip_token_length > 0 and L >= clip_token_length:
-        ref_clip = feats_3d[:, clip_token_length - 1 : clip_token_length, :]
-        diff_clip = torch.amax(
-            torch.abs(feats_3d[:, :clip_token_length, :] - ref_clip), dim=-1
-        )
-        pad_mask[:, :clip_token_length] |= diff_clip < eps
-
-    nonpad_mask = ~pad_mask
-
-    # Fallback: keep all tokens if the heuristic masks everything out to avoid
-    # downstream division-by-zero issues.
-    flat_counts = nonpad_mask.view(B, -1).sum(dim=-1)
-    fallback_rows = flat_counts == 0
-    if fallback_rows.any():
-        nonpad_mask[fallback_rows] = True
-
-    if squeeze:
-        return nonpad_mask[0]
-    return nonpad_mask
-
-
 def load_residual_procrustes(
     path: str,
     device: Optional[torch.device] = None,

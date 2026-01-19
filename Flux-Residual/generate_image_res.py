@@ -1,24 +1,34 @@
 import torch
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from diffusers.pipelines.flux.pipeline_flux import (
     FluxPipeline as OriginalFluxPipeline,
     FluxPipelineOutput,
     calculate_shift,
     retrieve_timesteps,
     XLA_AVAILABLE,
+    FluxLoraLoaderMixin,
+    USE_PEFT_BACKEND,
+    scale_lora_layers,
+    unscale_lora_layers,
 )
 if XLA_AVAILABLE:
     import torch_xla.core.xla_model as xm
 
 # 导入你的残差Transformer
 from flux_transformer_res import FluxTransformer2DModel_RES
+from util import resolve_rotation_bucket
 
 
 class FluxPipelineWithRES(OriginalFluxPipeline):
     def __call__(self, *args, 
                  residual_target_layers: Optional[List[int]] = None,
                  residual_origin_layer: Optional[int] = None,
-                 residual_weight: float = 1.0,** kwargs):
+                 residual_weights: Optional[Union[List[float], torch.Tensor]] = None,
+                 residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+                 residual_rotation_meta: Optional[Dict[str, Any]] = None,
+                 residual_use_layernorm: bool = True,
+                 residual_stop_grad: bool = False,
+                 **kwargs):
         """
         重写__call__方法，核心功能：
         1. 接收残差参数并注入Transformer调用
@@ -28,7 +38,11 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
         # -------------------------- 1. 初始化残差参数（核心新增）--------------------------
         self.residual_target_layers = residual_target_layers  # 残差目标层（双流块索引）
         self.residual_origin_layer = residual_origin_layer    # 残差原始层（双流块索引）
-        self.residual_weight = residual_weight                # 残差叠加权重
+        self.residual_weights = residual_weights              # 残差叠加权重
+        self.residual_rotation_matrices = residual_rotation_matrices
+        self.residual_rotation_meta = residual_rotation_meta
+        self.residual_use_layernorm = residual_use_layernorm
+        self.residual_stop_grad = residual_stop_grad
 
         # -------------------------- 2. 输入校验（过滤无关参数，避免报错）--------------------------
         # 提取check_inputs支持的参数（避免传递guidance_scale等不支持的参数）
@@ -66,7 +80,7 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
         prompt_2 = args[1] if len(args) > 1 else kwargs.get("prompt_2")  # 源码默认None，可省略（但保留更灵活）
 
         # 2. 精准调用 encode_prompt，只传源码支持的参数（完全匹配源码定义）
-        prompt_embeds, pooled_prompt_embeds, text_ids = self.encode_prompt(
+        prompt_outputs = self.encode_prompt(
             prompt=prompt,
             prompt_2=prompt_2,
             device=self._execution_device,  # 源码支持的device参数，复用上下文设备
@@ -76,6 +90,10 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
             max_sequence_length=kwargs.get("max_sequence_length", 512),  # 源码默认512
             lora_scale=kwargs.get("lora_scale"),  # 源码支持的Lora缩放（可选）
         )
+        if len(prompt_outputs) == 4:
+            prompt_embeds, pooled_prompt_embeds, text_ids, _ = prompt_outputs
+        else:
+            prompt_embeds, pooled_prompt_embeds, text_ids = prompt_outputs
                 
         # 计算潜变量通道数（Flux原生逻辑：in_channels//4）
         num_channels_latents = self.transformer.config.in_channels // 4
@@ -131,6 +149,11 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
                 # -------------------------- 关键：条件样本（cond）去噪（注入残差）--------------------------
+                selected_rotations = resolve_rotation_bucket(
+                    self.residual_rotation_matrices,
+                    self.residual_rotation_meta,
+                    t,
+                )
                 with self.transformer.cache_context("cond"):
                     noise_pred = self.transformer(
                         hidden_states=latents,
@@ -144,7 +167,10 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
                         # 注入残差参数（核心新增）
                         residual_target_layers=self.residual_target_layers,
                         residual_origin_layer=self.residual_origin_layer,
-                        residual_weight=self.residual_weight,
+                        residual_weights=self.residual_weights,
+                        residual_rotation_matrices=selected_rotations,
+                        residual_use_layernorm=self.residual_use_layernorm,
+                        residual_stop_grad=self.residual_stop_grad,
                         return_dict=False,
                     )[0]
 
@@ -154,6 +180,11 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
                     if negative_image_embeds is not None:
                         self._joint_attention_kwargs["ip_adapter_image_embeds"] = negative_image_embeds
                     
+                    selected_rotations = resolve_rotation_bucket(
+                        self.residual_rotation_matrices,
+                        self.residual_rotation_meta,
+                        t,
+                    )
                     with self.transformer.cache_context("uncond"):
                         neg_noise_pred = self.transformer(
                             hidden_states=latents,
@@ -167,7 +198,10 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
                             # 负样本也注入残差参数（保持逻辑一致）
                             residual_target_layers=self.residual_target_layers,
                             residual_origin_layer=self.residual_origin_layer,
-                            residual_weight=self.residual_weight,
+                            residual_weights=self.residual_weights,
+                            residual_rotation_matrices=selected_rotations,
+                            residual_use_layernorm=self.residual_use_layernorm,
+                            residual_stop_grad=self.residual_stop_grad,
                             return_dict=False,
                         )[0]
                     # 真CFG融合：负样本预测 + 缩放因子×（条件预测-负样本预测）
@@ -209,6 +243,67 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
             return (image,)
 
     # -------------------------- 辅助方法（复用+适配，无修改）--------------------------
+    def encode_prompt(
+        self,
+        prompt: Union[str, List[str]],
+        prompt_2: Optional[Union[str, List[str]]] = None,
+        device: Optional[torch.device] = None,
+        num_images_per_prompt: int = 1,
+        prompt_embeds: Optional[torch.FloatTensor] = None,
+        pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
+        max_sequence_length: int = 512,
+        lora_scale: Optional[float] = None,
+    ):
+        device = device or self._execution_device
+
+        if lora_scale is not None and isinstance(self, FluxLoraLoaderMixin):
+            self._lora_scale = lora_scale
+            if self.text_encoder is not None and USE_PEFT_BACKEND:
+                scale_lora_layers(self.text_encoder, lora_scale)
+            if self.text_encoder_2 is not None and USE_PEFT_BACKEND:
+                scale_lora_layers(self.text_encoder_2, lora_scale)
+
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+
+        token_mask = None
+        if prompt_embeds is None:
+            prompt_2 = prompt_2 or prompt
+            prompt_2 = [prompt_2] if isinstance(prompt_2, str) else prompt_2
+
+            pooled_prompt_embeds = self._get_clip_prompt_embeds(
+                prompt=prompt,
+                device=device,
+                num_images_per_prompt=num_images_per_prompt,
+            )
+            prompt_embeds = self._get_t5_prompt_embeds(
+                prompt=prompt_2,
+                num_images_per_prompt=num_images_per_prompt,
+                max_sequence_length=max_sequence_length,
+                device=device,
+            )
+
+            if self.tokenizer_2 is not None:
+                t5_tokens = self.tokenizer_2(
+                    prompt_2,
+                    padding="max_length",
+                    max_length=max_sequence_length,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                token_mask = t5_tokens.attention_mask.to(device=device).bool()
+                if num_images_per_prompt > 1:
+                    token_mask = token_mask.repeat_interleave(num_images_per_prompt, dim=0)
+
+        if self.text_encoder is not None and isinstance(self, FluxLoraLoaderMixin) and USE_PEFT_BACKEND:
+            unscale_lora_layers(self.text_encoder, lora_scale)
+        if self.text_encoder_2 is not None and isinstance(self, FluxLoraLoaderMixin) and USE_PEFT_BACKEND:
+            unscale_lora_layers(self.text_encoder_2, lora_scale)
+
+        dtype = self.text_encoder.dtype if self.text_encoder is not None else self.transformer.dtype
+        text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device, dtype=dtype)
+
+        return prompt_embeds, pooled_prompt_embeds, text_ids, token_mask
+
     def _prepare_call_context(self, *args, **kwargs):
         """准备全局调用上下文：batch_size、设备、引导强度等"""
         if self._execution_device is None:
@@ -347,7 +442,7 @@ if __name__ == "__main__":
     residual_params = {  # 残差参数配置
         "residual_target_layers": [11, 12, 13, 14, 15],  # 要叠加残差的双流块索引
         "residual_origin_layer": 2,                   # 提供残差的原始双流块索引
-        "residual_weight": 0.25                      # 残差强度（可根据效果调整）
+        "residual_weights": [0.25]                   # 残差强度（可根据效果调整）
     }
     seeds = [0]  # 随机种子（可扩展为多个种子生成多张图）
 

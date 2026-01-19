@@ -18,7 +18,6 @@ import yaml
 from datasets import CachedFeatureDataset_Packed, collate_fn_packed, get_target_dataset
 from sampler import MyQwenImagePipeline
 from util import (
-    build_text_token_nonpad_mask,
     get_transform,
     load_residual_procrustes,
     select_residual_rotations,
@@ -43,13 +42,8 @@ def _get_batch_value(batch: dict, keys: Sequence[str]) -> Optional[torch.Tensor]
 
 def _ensure_prompt_mask(prompt_embeds: torch.Tensor, prompt_mask: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
     if prompt_mask is not None:
-        return prompt_mask
-    if prompt_embeds is None:
-        return None
-    mask = build_text_token_nonpad_mask(prompt_embeds)
-    if mask.dim() == 1:
-        mask = mask.unsqueeze(0)
-    return mask.to(device=prompt_embeds.device)
+        return prompt_mask.to(device=prompt_embeds.device)
+    raise ValueError("prompt_mask must be provided from encode_prompt or cached data.")
 
 
 def _pack_latents_if_needed(
