@@ -12,6 +12,7 @@ class FluxTransformer2DModel_RES(nn.Module):
     2. 修复整数权重导致的AttributeError
     3. 1个源层 + 多目标层 + 单/多权重
     4. 标准化空间叠加残差（z-score → 叠加 → LayerNorm → 恢复分布）
+    5. 对齐SD3残差逻辑：LayerNorm Residual + Procrustes + Learnable weights
     5. 注释掉所有详细打印，仅保留极简日志
     """
     def __init__(self, base_model: FluxTransformer2DModel):
@@ -62,6 +63,41 @@ class FluxTransformer2DModel_RES(nn.Module):
         
         return x_norm, mean, std
 
+    def _apply_residual(
+        self,
+        target: torch.Tensor,
+        origin: torch.Tensor,
+        w: torch.Tensor,
+        *,
+        use_layernorm: bool = True,
+        stop_grad: bool = False,
+        rotation_matrix: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if stop_grad:
+            target_nograd = target.detach()
+            origin_nograd = origin.detach()
+        else:
+            target_nograd = target
+            origin_nograd = origin
+
+        target_norm, target_mean, target_std = self._standardize_tokenwise(target_nograd)
+        origin_norm, _, _ = self._standardize_tokenwise(origin_nograd)
+
+        if rotation_matrix is not None:
+            origin_norm = torch.matmul(origin_norm, rotation_matrix)
+
+        if w >= 0:
+            mixed = target_norm + w * origin_norm
+        else:
+            mixed = target_norm * (1 - w)
+
+        if use_layernorm:
+            mixed = torch.nn.functional.layer_norm(
+                mixed, normalized_shape=(mixed.shape[-1],), eps=1e-6
+            )
+
+        return mixed * target_std + target_mean
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -72,9 +108,14 @@ class FluxTransformer2DModel_RES(nn.Module):
         txt_ids: Optional[torch.Tensor] = None,
         img_ids: Optional[torch.Tensor] = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
+        return_dict: bool = True,
+        output_text_inputs: bool = False,
         residual_target_layers: Optional[List[int]] = None,
         residual_origin_layer: Optional[int] = None,
-        residual_weight: Optional[Union[List[float], torch.Tensor, float, int]] = 1.0,  # 新增int类型支持
+        residual_weights: Optional[Union[List[float], torch.Tensor]] = None,
+        residual_use_layernorm: bool = True,
+        residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        residual_stop_grad: bool = False,
         **kwargs,
     ) -> Union[Dict[str, torch.Tensor], Transformer2DModelOutput]:
         """
@@ -84,9 +125,6 @@ class FluxTransformer2DModel_RES(nn.Module):
         3. 仅保存源层输入block前的特征（参考代码逻辑，减少显存占用）
         4. 标准化空间叠加残差：z-score → 叠加 → LayerNorm → 恢复分布
         """
-        # 1. 初始化源层特征缓存（仅保存源层，而非所有层）
-        _saved_origin_text = None
-
         # 2. 处理时间步嵌入（严格对齐 FLUX 原生逻辑）
         timestep = timestep.to(hidden_states.dtype) * 1000
         if guidance is not None:
@@ -114,79 +152,92 @@ class FluxTransformer2DModel_RES(nn.Module):
             encoder_hidden_states = self.base_model.context_embedder(encoder_hidden_states)
         hidden_states = self.base_model.x_embedder(hidden_states)
 
-        # 预处理残差权重（修复整数类型错误）
+        use_residual = (
+            residual_origin_layer is not None
+            and residual_target_layers is not None
+            and residual_weights is not None
+        )
+
+        txt_input_states_list = []
         residual_weights_tensor = None
-        if residual_weight is not None:
-            # 情况1：列表/元组 → 转为tensor
-            if isinstance(residual_weight, (list, tuple)):
-                residual_weights_tensor = torch.tensor(residual_weight, dtype=torch.float32)
-            # 情况2：Python原生int/float → 转为长度1的tensor
-            elif isinstance(residual_weight, (int, float)):
-                residual_weights_tensor = torch.tensor([float(residual_weight)], dtype=torch.float32)
-            # 情况3：torch.Tensor → 转为float32
-            elif isinstance(residual_weight, torch.Tensor):
-                residual_weights_tensor = residual_weight.float()
-            # 其他情况 → 报错提示
+        residual_rotations = None
+        if use_residual:
+            if isinstance(residual_weights, (list, tuple)):
+                residual_weights_tensor = torch.tensor(
+                    residual_weights, dtype=encoder_hidden_states.dtype
+                )
+            elif torch.is_tensor(residual_weights):
+                residual_weights_tensor = residual_weights.to(dtype=encoder_hidden_states.dtype)
             else:
-                raise TypeError(f"不支持的权重类型：{type(residual_weight)}，仅支持list/tuple/int/float/torch.Tensor")
+                raise TypeError(
+                    "residual_weights must be a Tensor or a list/tuple of floats."
+                )
+            residual_weights_tensor = residual_weights_tensor.to(encoder_hidden_states.device)
+
+            if residual_rotation_matrices is not None:
+                if isinstance(residual_rotation_matrices, (list, tuple)):
+                    if all(torch.is_tensor(r) for r in residual_rotation_matrices):
+                        residual_rotations = torch.stack(residual_rotation_matrices, dim=0)
+                    else:
+                        residual_rotations = torch.tensor(residual_rotation_matrices)
+                elif torch.is_tensor(residual_rotation_matrices):
+                    residual_rotations = residual_rotation_matrices
+                else:
+                    raise TypeError(
+                        "residual_rotation_matrices must be a Tensor or a list/tuple of Tensors."
+                    )
+                if residual_rotations.dim() == 2:
+                    residual_rotations = residual_rotations.unsqueeze(0)
+                if residual_rotations.dim() != 3:
+                    raise ValueError(
+                        "residual_rotation_matrices must have shape (N, D, D) or (D, D)."
+                    )
+                residual_rotations = residual_rotations.to(
+                    device=encoder_hidden_states.device,
+                    dtype=encoder_hidden_states.dtype,
+                )
+                if residual_rotations.shape[0] != len(residual_target_layers):
+                    raise ValueError(
+                        "residual_rotation_matrices length must match residual_target_layers."
+                    )
+                if residual_rotations.shape[-1] != encoder_hidden_states.shape[-1] or \
+                    residual_rotations.shape[-2] != encoder_hidden_states.shape[-1]:
+                    raise ValueError(
+                        "residual_rotation_matrices feature dimension must match encoder_hidden_states."
+                    )
+
+            pre_encoder_states = []
 
         # 6. 遍历第一阶段：双流 Transformer 块（transformer_blocks）
         for index_block, block in enumerate(self.base_model.transformer_blocks):
-            # 源层：保存输入当前block前的文本流特征（仅保存一次，参考代码逻辑）
-            if (
-                residual_origin_layer is not None
-                and index_block == residual_origin_layer
-                and encoder_hidden_states is not None
-            ):
-                _saved_origin_text = encoder_hidden_states.detach().clone()
+            if output_text_inputs and encoder_hidden_states is not None:
+                txt_input_states_list.append(encoder_hidden_states)
+            if use_residual and encoder_hidden_states is not None:
+                pre_encoder_states.append(encoder_hidden_states)
 
-            # 残差叠加：标准化空间叠加 + LayerNorm + 分布恢复（核心逻辑，和参考代码一致）
-            if (
-                residual_origin_layer is not None
-                and residual_target_layers is not None
-                and index_block in residual_target_layers
-                and encoder_hidden_states is not None
-                and _saved_origin_text is not None
-                and residual_weights_tensor is not None
-            ):
-                # 1. 获取原始层/目标层特征并对齐设备/dtype
-                origin_enc = _saved_origin_text.to(
-                    device=encoder_hidden_states.device,
-                    dtype=encoder_hidden_states.dtype
-                )
-                target_enc = encoder_hidden_states
-                
-                # 形状校验（保留严谨性）
-                if origin_enc.shape != target_enc.shape:
-                    raise ValueError(
-                        f"残差形状不匹配：原始层 {origin_enc.shape} vs 目标层 {target_enc.shape}"
+                if index_block in residual_target_layers:
+                    tid = residual_target_layers.index(index_block)
+                    w = residual_weights_tensor[tid]
+
+                    if 0 <= residual_origin_layer < len(pre_encoder_states):
+                        origin_enc = pre_encoder_states[residual_origin_layer]
+                    else:
+                        raise ValueError(f"Invalid residual_origin_layer={residual_origin_layer}")
+
+                    if origin_enc.shape != encoder_hidden_states.shape:
+                        raise ValueError(
+                            f"[Residual] Shape mismatch: origin={origin_enc.shape} vs target={encoder_hidden_states.shape}"
+                        )
+
+                    rotation = residual_rotations[tid] if residual_rotations is not None else None
+                    encoder_hidden_states = self._apply_residual(
+                        encoder_hidden_states,
+                        origin_enc,
+                        w,
+                        use_layernorm=residual_use_layernorm,
+                        stop_grad=residual_stop_grad,
+                        rotation_matrix=rotation,
                     )
-                
-                # 2. 获取当前目标层对应的权重（兼容单/多权重）
-                tid = residual_target_layers.index(index_block)
-                # 权重不足时复用最后一个（容错逻辑）
-                if tid >= len(residual_weights_tensor):
-                    tid = len(residual_weights_tensor) - 1
-                w = residual_weights_tensor[tid].to(
-                    device=target_enc.device, dtype=target_enc.dtype
-                )
-
-                # 3. Token-wise 标准化（z-score）
-                target_norm, target_mean, target_std = self._standardize_tokenwise(target_enc, layer_idx=index_block)
-                origin_norm, _, _ = self._standardize_tokenwise(origin_enc, layer_idx=residual_origin_layer)
-
-                # 4. 标准化空间叠加残差
-                mixed_norm = target_norm + w * origin_norm
-
-                # 5. LayerNorm稳定分布（修复normalized_shape为tuple）
-                mixed_norm_ln = torch.nn.functional.layer_norm(
-                    mixed_norm, 
-                    normalized_shape=(mixed_norm.shape[-1],),  # 关键修复：int→tuple
-                    eps=1e-6  # 和参考代码eps一致
-                )
-
-                # 6. 恢复目标层原始分布（保证特征尺度兼容原生逻辑）
-                encoder_hidden_states = mixed_norm_ln * target_std + target_mean
 
             # 执行当前双流块（参数顺序完全对齐FLUX原生）
             encoder_hidden_states, hidden_states = block(
@@ -211,9 +262,9 @@ class FluxTransformer2DModel_RES(nn.Module):
         hidden_states = self.base_model.norm_out(hidden_states, temb)
         hidden_states = self.base_model.proj_out(hidden_states)
 
-        # 仅保留最终结束提示（如需完全删除，注释/删除以下3行即可）
-        # print("\n==================== 【前向传播结束】====================")
-        # print(f"最终输出hidden_states形状：{hidden_states.shape}")
+        if not return_dict:
+            if output_text_inputs:
+                return {"sample": hidden_states, "txt_input_states": txt_input_states_list}
+            return (hidden_states,)
 
-        # 9. 返回结果（兼容原生输出格式）
         return Transformer2DModelOutput(sample=hidden_states)

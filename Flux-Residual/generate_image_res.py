@@ -1,5 +1,5 @@
 import torch
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from diffusers.pipelines.flux.pipeline_flux import (
     FluxPipeline as OriginalFluxPipeline,
     FluxPipelineOutput,
@@ -18,7 +18,11 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
     def __call__(self, *args, 
                  residual_target_layers: Optional[List[int]] = None,
                  residual_origin_layer: Optional[int] = None,
-                 residual_weight: float = 1.0,** kwargs):
+                 residual_weights: Optional[Union[List[float], torch.Tensor]] = None,
+                 residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+                 residual_use_layernorm: bool = True,
+                 residual_stop_grad: bool = False,
+                 **kwargs):
         """
         重写__call__方法，核心功能：
         1. 接收残差参数并注入Transformer调用
@@ -28,7 +32,10 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
         # -------------------------- 1. 初始化残差参数（核心新增）--------------------------
         self.residual_target_layers = residual_target_layers  # 残差目标层（双流块索引）
         self.residual_origin_layer = residual_origin_layer    # 残差原始层（双流块索引）
-        self.residual_weight = residual_weight                # 残差叠加权重
+        self.residual_weights = residual_weights              # 残差叠加权重
+        self.residual_rotation_matrices = residual_rotation_matrices
+        self.residual_use_layernorm = residual_use_layernorm
+        self.residual_stop_grad = residual_stop_grad
 
         # -------------------------- 2. 输入校验（过滤无关参数，避免报错）--------------------------
         # 提取check_inputs支持的参数（避免传递guidance_scale等不支持的参数）
@@ -144,7 +151,10 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
                         # 注入残差参数（核心新增）
                         residual_target_layers=self.residual_target_layers,
                         residual_origin_layer=self.residual_origin_layer,
-                        residual_weight=self.residual_weight,
+                        residual_weights=self.residual_weights,
+                        residual_rotation_matrices=self.residual_rotation_matrices,
+                        residual_use_layernorm=self.residual_use_layernorm,
+                        residual_stop_grad=self.residual_stop_grad,
                         return_dict=False,
                     )[0]
 
@@ -167,7 +177,10 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
                             # 负样本也注入残差参数（保持逻辑一致）
                             residual_target_layers=self.residual_target_layers,
                             residual_origin_layer=self.residual_origin_layer,
-                            residual_weight=self.residual_weight,
+                            residual_weights=self.residual_weights,
+                            residual_rotation_matrices=self.residual_rotation_matrices,
+                            residual_use_layernorm=self.residual_use_layernorm,
+                            residual_stop_grad=self.residual_stop_grad,
                             return_dict=False,
                         )[0]
                     # 真CFG融合：负样本预测 + 缩放因子×（条件预测-负样本预测）
@@ -347,7 +360,7 @@ if __name__ == "__main__":
     residual_params = {  # 残差参数配置
         "residual_target_layers": [11, 12, 13, 14, 15],  # 要叠加残差的双流块索引
         "residual_origin_layer": 2,                   # 提供残差的原始双流块索引
-        "residual_weight": 0.25                      # 残差强度（可根据效果调整）
+        "residual_weights": [0.25]                   # 残差强度（可根据效果调整）
     }
     seeds = [0]  # 随机种子（可扩展为多个种子生成多张图）
 
