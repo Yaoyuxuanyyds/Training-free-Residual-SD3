@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 import tqdm
 
 from dataset.datasets import get_target_dataset
-from util import get_transform, set_seed
+from util import build_text_token_nonpad_mask, get_transform, set_seed
 from generate_image_res import FluxPipelineWithRES
 from flux_transformer_res import FluxTransformer2DModel_RES
 
@@ -64,10 +64,15 @@ def precompute_and_save_features(
             max_sequence_length=args.max_sequence_length,
             lora_scale=None,
         )
+        token_mask = torch.stack(
+            [build_text_token_nonpad_mask(prompt_emb[i]) for i in range(prompt_emb.shape[0])],
+            dim=0,
+        )
 
         prompt_emb = prompt_emb.to(dtype=cache_dtype).cpu()
         pooled_emb = pooled_emb.to(dtype=cache_dtype).cpu()
         text_ids = text_ids.cpu()
+        token_mask = token_mask.cpu()
         x0 = x0.to(dtype=cache_dtype).cpu()
 
         for j in range(x0.shape[0]):
@@ -78,6 +83,7 @@ def precompute_and_save_features(
                     "prompt_emb": prompt_emb[j],
                     "pooled_emb": pooled_emb[j],
                     "text_ids": text_ids[j],
+                    "token_mask": token_mask[j],
                     "index": idx_global,
                 }
             )

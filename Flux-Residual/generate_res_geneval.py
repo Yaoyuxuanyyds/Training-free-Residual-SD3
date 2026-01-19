@@ -39,6 +39,7 @@ class FluxGenevalGenerator:
         residual_origin_layer: Optional[int] = None,
         residual_weights: Optional[List[float]] = None,
         residual_rotation_matrices: Optional[torch.Tensor] = None,
+        residual_rotation_meta: Optional[dict] = None,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         if not self.device == "cuda":
@@ -79,6 +80,7 @@ class FluxGenevalGenerator:
             "residual_origin_layer": residual_origin_layer,
             "residual_weights": residual_weights,
             "residual_rotation_matrices": residual_rotation_matrices,
+            "residual_rotation_meta": residual_rotation_meta,
         }
 
     def generate_single_image(
@@ -127,6 +129,8 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0, help="基础随机种子")
     parser.add_argument("--batch_size", type=int, default=16, help="网格图每行显示数量")
     parser.add_argument("--skip_grid", action="store_true", help="是否跳过生成网格图")
+    parser.add_argument("--world_size", type=int, default=1)
+    parser.add_argument("--rank", type=int, default=0)
 
     # Flux生成参数
     parser.add_argument("--model_path", type=str,
@@ -165,6 +169,7 @@ def main(opt):
 
     # 初始化生成器（使用导入的Pipeline）
     residual_rotation_matrices = None
+    residual_rotation_meta = None
     if opt.residual_procrustes_path is not None:
         residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
             opt.residual_procrustes_path
@@ -174,6 +179,7 @@ def main(opt):
         )
         if opt.residual_origin_layer is None and isinstance(meta, dict):
             opt.residual_origin_layer = meta.get("origin_layer")
+        residual_rotation_meta = meta
 
     if opt.residual_weights is None and opt.residual_weights_path is not None:
         opt.residual_weights = load_residual_weights(opt.residual_weights_path).tolist()
@@ -187,10 +193,17 @@ def main(opt):
         residual_origin_layer=opt.residual_origin_layer,
         residual_weights=opt.residual_weights,
         residual_rotation_matrices=residual_rotation_matrices,
+        residual_rotation_meta=residual_rotation_meta,
     )
 
     # 批量生成
-    for prompt_idx, metadata in enumerate(metadatas):
+    metadatas_with_idx = list(enumerate(metadatas))
+    if opt.world_size > 1:
+        metadatas_with_idx = [
+            (i, m) for i, m in metadatas_with_idx if i % opt.world_size == opt.rank
+        ]
+        print(f"[Rank {opt.rank}] total prompts={len(metadatas_with_idx)}")
+    for prompt_idx, metadata in metadatas_with_idx:
         prompt = metadata["prompt"]
         prompt_dir = os.path.join(opt.outdir, f"{prompt_idx:05d}")
         sample_dir = os.path.join(prompt_dir, "samples")

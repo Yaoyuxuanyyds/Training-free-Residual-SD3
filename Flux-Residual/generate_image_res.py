@@ -12,6 +12,7 @@ if XLA_AVAILABLE:
 
 # 导入你的残差Transformer
 from flux_transformer_res import FluxTransformer2DModel_RES
+from util import resolve_rotation_bucket
 
 
 class FluxPipelineWithRES(OriginalFluxPipeline):
@@ -20,6 +21,7 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
                  residual_origin_layer: Optional[int] = None,
                  residual_weights: Optional[Union[List[float], torch.Tensor]] = None,
                  residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+                 residual_rotation_meta: Optional[Dict[str, Any]] = None,
                  residual_use_layernorm: bool = True,
                  residual_stop_grad: bool = False,
                  **kwargs):
@@ -34,6 +36,7 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
         self.residual_origin_layer = residual_origin_layer    # 残差原始层（双流块索引）
         self.residual_weights = residual_weights              # 残差叠加权重
         self.residual_rotation_matrices = residual_rotation_matrices
+        self.residual_rotation_meta = residual_rotation_meta
         self.residual_use_layernorm = residual_use_layernorm
         self.residual_stop_grad = residual_stop_grad
 
@@ -138,6 +141,11 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
                 # -------------------------- 关键：条件样本（cond）去噪（注入残差）--------------------------
+                selected_rotations = resolve_rotation_bucket(
+                    self.residual_rotation_matrices,
+                    self.residual_rotation_meta,
+                    t,
+                )
                 with self.transformer.cache_context("cond"):
                     noise_pred = self.transformer(
                         hidden_states=latents,
@@ -152,7 +160,7 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
                         residual_target_layers=self.residual_target_layers,
                         residual_origin_layer=self.residual_origin_layer,
                         residual_weights=self.residual_weights,
-                        residual_rotation_matrices=self.residual_rotation_matrices,
+                        residual_rotation_matrices=selected_rotations,
                         residual_use_layernorm=self.residual_use_layernorm,
                         residual_stop_grad=self.residual_stop_grad,
                         return_dict=False,
@@ -164,6 +172,11 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
                     if negative_image_embeds is not None:
                         self._joint_attention_kwargs["ip_adapter_image_embeds"] = negative_image_embeds
                     
+                    selected_rotations = resolve_rotation_bucket(
+                        self.residual_rotation_matrices,
+                        self.residual_rotation_meta,
+                        t,
+                    )
                     with self.transformer.cache_context("uncond"):
                         neg_noise_pred = self.transformer(
                             hidden_states=latents,
@@ -178,7 +191,7 @@ class FluxPipelineWithRES(OriginalFluxPipeline):
                             residual_target_layers=self.residual_target_layers,
                             residual_origin_layer=self.residual_origin_layer,
                             residual_weights=self.residual_weights,
-                            residual_rotation_matrices=self.residual_rotation_matrices,
+                            residual_rotation_matrices=selected_rotations,
                             residual_use_layernorm=self.residual_use_layernorm,
                             residual_stop_grad=self.residual_stop_grad,
                             return_dict=False,

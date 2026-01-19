@@ -14,6 +14,7 @@ from torch.utils.data import ConcatDataset, Subset
 from tqdm import tqdm
 
 from dataset.datasets import get_target_dataset
+from util import build_text_token_nonpad_mask
 from generate_image_res import FluxPipelineWithRES
 from flux_transformer_res import FluxTransformer2DModel_RES
 
@@ -180,8 +181,14 @@ def run(args: argparse.Namespace):
     pipe.transformer.eval().requires_grad_(False)
 
     dataset = _build_dataset(args)
-    target_layers = args.target_layers or []
-    if len(target_layers) == 0:
+    num_layers = len(pipe.transformer.base_model.transformer_blocks)
+    if args.target_layers:
+        target_layers = sorted(set(args.target_layers))
+    else:
+        if args.target_layer_start is None:
+            raise ValueError("--target-layer-start must be set when --target-layers is omitted.")
+        target_layers = list(range(args.target_layer_start, num_layers))
+    if not target_layers:
         raise ValueError("target_layers cannot be empty.")
 
     num_train_timesteps = int(pipe.scheduler.config.num_train_timesteps)
@@ -207,6 +214,10 @@ def run(args: argparse.Namespace):
             max_sequence_length=args.max_sequence_length,
             lora_scale=None,
         )
+
+        token_mask = build_text_token_nonpad_mask(prompt_emb[0]).to(torch.bool)
+        if not args.use_padding_mask or token_mask.sum() == 0:
+            token_mask = None
 
         num_channels_latents = pipe.transformer.config.in_channels // 4
         latents_prepare, latent_image_ids = pipe.prepare_latents(
@@ -252,10 +263,14 @@ def run(args: argparse.Namespace):
             txt_input_states = outputs.get("txt_input_states")
 
             origin_state = txt_input_states[args.origin_layer][0].float().cpu()
+            if token_mask is not None:
+                origin_state = origin_state[token_mask.cpu()]
             origin_chunks[bucket_idx].append(origin_state)
 
             for layer in target_layers:
                 target_state = txt_input_states[layer][0].float().cpu()
+                if token_mask is not None:
+                    target_state = target_state[token_mask.cpu()]
                 target_chunks[layer][bucket_idx].append(target_state)
 
     def apply_simulated_ln(chunks_list: List[torch.Tensor]) -> torch.Tensor:
@@ -332,7 +347,9 @@ def main():
     parser.add_argument("--image", type=str, default=None)
 
     parser.add_argument("--origin-layer", type=int, required=True)
-    parser.add_argument("--target-layers", type=int, nargs="+", required=True)
+    parser.add_argument("--target-layer-start", type=int, default=None)
+    parser.add_argument("--target-layers", type=int, nargs="+", default=None)
+    parser.add_argument("--no-padding-mask", action="store_false", dest="use_padding_mask", default=True)
 
     parser.add_argument("--height", type=int, default=1024)
     parser.add_argument("--width", type=int, default=1024)

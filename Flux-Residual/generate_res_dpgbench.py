@@ -50,6 +50,8 @@ if __name__ == "__main__":
                         help="Flux模型本地路径")
     parser.add_argument("--save_dir", type=str, required=True, help="DPG输出目录（保存2x2网格图）")
     parser.add_argument("--prompt_dir", type=str, required=True, help="DPG prompt文件目录（.txt格式）")
+    parser.add_argument("--world_size", type=int, default=1)
+    parser.add_argument("--rank", type=int, default=0)
 
     # 残差参数（与SD3一致）
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None,
@@ -98,6 +100,7 @@ if __name__ == "__main__":
                 param.requires_grad = False
 
     residual_rotation_matrices = None
+    residual_rotation_meta = None
     if args.residual_procrustes_path is not None:
         residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
             args.residual_procrustes_path
@@ -107,6 +110,7 @@ if __name__ == "__main__":
         )
         if args.residual_origin_layer is None and isinstance(meta, dict):
             args.residual_origin_layer = meta.get("origin_layer")
+        residual_rotation_meta = meta
 
     if args.residual_weights is None and args.residual_weights_path is not None:
         args.residual_weights = load_residual_weights(args.residual_weights_path).tolist()
@@ -120,6 +124,7 @@ if __name__ == "__main__":
         "residual_origin_layer": args.residual_origin_layer,
         "residual_weights": args.residual_weights,
         "residual_rotation_matrices": residual_rotation_matrices,
+        "residual_rotation_meta": residual_rotation_meta,
     }
 
     # -------------------------- DPG核心流程（固定seed=42~45）--------------------------
@@ -127,6 +132,8 @@ if __name__ == "__main__":
 
     # 扫描prompt文件（单卡处理所有prompt）
     txt_files = sorted(glob.glob(os.path.join(args.prompt_dir, "*.txt")))
+    if args.world_size > 1:
+        txt_files = [f for i, f in enumerate(txt_files) if i % args.world_size == args.rank]
     total_prompts = len(txt_files)
     print(f"[DPG] 单卡运行，共处理 {total_prompts} 个prompt")
     print(f"[Seed配置] 每个prompt的4个样本seed固定为：{args.seed}、{args.seed+1}、{args.seed+2}、{args.seed+3}")

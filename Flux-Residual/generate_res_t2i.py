@@ -36,6 +36,7 @@ class FluxResGenerator:
         residual_origin_layer=None,
         residual_weights=None,
         residual_rotation_matrices=None,
+        residual_rotation_meta=None,
         cfg=3.5,  # Flux默认引导尺度（原Qwen的4.0调整为Flux推荐值）
         steps=50,
         width=1024,
@@ -77,6 +78,7 @@ class FluxResGenerator:
             "residual_origin_layer": residual_origin_layer,
             "residual_weights": residual_weights,
             "residual_rotation_matrices": residual_rotation_matrices,
+            "residual_rotation_meta": residual_rotation_meta,
         }
 
     def generate(self, prompt, seed):
@@ -163,6 +165,7 @@ def main(opt):
     print(f"[Rank {opt.rank}] Device={device}, world_size={opt.world_size}")
 
     residual_rotation_matrices = None
+    residual_rotation_meta = None
     if opt.residual_procrustes_path is not None:
         residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
             opt.residual_procrustes_path
@@ -172,6 +175,7 @@ def main(opt):
         )
         if opt.residual_origin_layer is None and isinstance(meta, dict):
             opt.residual_origin_layer = meta.get("origin_layer")
+        residual_rotation_meta = meta
 
     if opt.residual_weights is None and opt.residual_weights_path is not None:
         opt.residual_weights = load_residual_weights(opt.residual_weights_path).tolist()
@@ -186,6 +190,7 @@ def main(opt):
         residual_origin_layer=opt.residual_origin_layer,
         residual_weights=opt.residual_weights,
         residual_rotation_matrices=residual_rotation_matrices,
+        residual_rotation_meta=residual_rotation_meta,
         cfg=opt.cfg,
         steps=opt.steps,
         width=opt.width,
