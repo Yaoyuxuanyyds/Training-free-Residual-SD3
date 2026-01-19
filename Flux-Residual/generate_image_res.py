@@ -440,9 +440,9 @@ if __name__ == "__main__":
     # 3. 采样参数配置
     prompt = "A cat holding a sign that says hello world"  # 生成提示词
     residual_params = {  # 残差参数配置
-        "residual_target_layers": [11, 12, 13, 14, 15],  # 要叠加残差的双流块索引
-        "residual_origin_layer": 2,                   # 提供残差的原始双流块索引
-        "residual_weights": [0.25]                   # 残差强度（可根据效果调整）
+        "residual_target_layers": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],  # 要叠加残差的双流块索引
+        "residual_origin_layer": 1,                   # 提供残差的原始双流块索引
+        "residual_weights": [0.025]                   # 残差强度（可根据效果调整）
     }
     seeds = [0]  # 随机种子（可扩展为多个种子生成多张图）
 
@@ -464,7 +464,7 @@ if __name__ == "__main__":
         ).images[0]  # 取第一张图（batch_size=1时直接取）
 
         # 保存图像
-        image_path = f"flux_residual_{i}.png"
+        image_path = f"/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/Flux-Residual/logs/generate/flux_residual_{i}.png"
         image.save(image_path)
         print(f"已保存第{i}张图像：{image_path}")
         

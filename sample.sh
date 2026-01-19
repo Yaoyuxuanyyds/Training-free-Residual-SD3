@@ -3,7 +3,7 @@
 ### -----------------------------
 ### Basic Settings
 ### -----------------------------
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 
 MODEL="sd3"
 NFE=28
@@ -12,7 +12,7 @@ IMGSIZE=1024
 BATCHSIZE=1
 
 
-SAVEDIR="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/generate/test5"
+SAVEDIR="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/generate/test6"
 
 
 ### -----------------------------
@@ -23,7 +23,7 @@ RES_ORIGIN=1
 
 RES_TARGET="$(seq -s ' ' 2 21)"
 
-RES_WEIGHT="$(printf '0.1 %.0s' $(seq 2 21))"
+RES_WEIGHT="$(printf '0.025 %.0s' $(seq 2 21))"
 
 
 
@@ -66,7 +66,7 @@ python sample.py \
     --timestep_residual_weight_exp_alpha 0.0 \
     --residual_target_layers $RES_TARGET \
     --residual_origin_layer $RES_ORIGIN \
-    --residual_procrustes_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln.pt \
+    --residual_procrustes_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln_simplize_t5.pt \
     --residual_weights $RES_WEIGHT \
 
     # --residual_weights_path "/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/learnable_residual/sd3_residual_weights/residual_weights_step2000_final.pth" \
