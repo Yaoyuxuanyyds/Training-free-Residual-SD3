@@ -250,6 +250,9 @@ class FluxTransformer2DModel_RES(nn.Module):
 
         # 7. 遍历第二阶段：单流 Transformer 块（无修改）
         for block in self.base_model.single_transformer_blocks:
+            if output_text_inputs and encoder_hidden_states is not None:
+                txt_input_states_list.append(encoder_hidden_states)
+                
             encoder_hidden_states, hidden_states = block(
                 hidden_states=hidden_states,
                 encoder_hidden_states=encoder_hidden_states,

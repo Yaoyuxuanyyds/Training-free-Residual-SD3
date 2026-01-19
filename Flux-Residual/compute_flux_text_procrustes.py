@@ -202,7 +202,7 @@ def run(args: argparse.Namespace):
 
     dataset = _build_dataset(args)
     # num_layers = len(pipe.transformer.base_model.transformer_blocks)
-    num_layers = 19
+    num_layers = len(pipe.transformer.base_model.transformer_blocks) + len(pipe.transformer.base_model.single_transformer_blocks)
     
     if args.target_layers:
         target_layers = sorted(set(args.target_layers))

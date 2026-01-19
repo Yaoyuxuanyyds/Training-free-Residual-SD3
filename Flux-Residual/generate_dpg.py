@@ -49,7 +49,7 @@ if __name__ == "__main__":
                         default="/inspire/hdd/project/chineseculture/yaoyuxuan-CZXS25220085/p-yaoyuxuan/REPA-SD3-1/flux/FLUX.1-dev",
                         help="Flux模型本地路径")
     parser.add_argument("--save_dir", type=str, required=True, help="DPG输出目录（保存2x2网格图）")
-    parser.add_argument("--prompt_dir", type=str, required=True, help="DPG prompt文件目录（.txt格式）")
+    parser.add_argument("--prompt_dir", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/benches/ELLA/dpg_bench/prompts")
     parser.add_argument("--world_size", type=int, default=1)
     parser.add_argument("--rank", type=int, default=0)
 
