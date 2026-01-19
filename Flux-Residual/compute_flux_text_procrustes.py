@@ -258,13 +258,17 @@ def run(args: argparse.Namespace):
                 pipe.scheduler, z0, timestep_idx, generator=gen_cuda
             )
 
+            prompt_emb_for_run = prompt_emb
+            if prompt_emb_for_run.dim() + 1 == z_t.dim():
+                prompt_emb_for_run = prompt_emb_for_run.unsqueeze(1)
+
             with torch.no_grad():
                 outputs = pipe.transformer(
                     hidden_states=z_t.to(dtype=pipe.transformer.dtype),
                     timestep=(t_tensor.to(dtype=pipe.transformer.dtype) / 1000.0),
                     guidance=guidance,
                     pooled_projections=pooled_emb.to(dtype=pipe.transformer.dtype),
-                    encoder_hidden_states=prompt_emb.to(dtype=pipe.transformer.dtype),
+                    encoder_hidden_states=prompt_emb_for_run.to(dtype=pipe.transformer.dtype),
                     txt_ids=text_ids,
                     img_ids=latent_image_ids,
                     return_dict=False,
