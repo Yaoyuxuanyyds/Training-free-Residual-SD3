@@ -22,6 +22,7 @@ from util import (
     get_transform,
     load_residual_procrustes,
     select_residual_rotations,
+    resolve_rotation_bucket,
     set_seed,
 )
 
@@ -136,6 +137,8 @@ def compute_total_loss(
     prompt_embeds_mask,
     img_shapes,
     txt_seq_lens,
+    residual_rotation_matrices: Optional[torch.Tensor] = None,
+    residual_rotation_meta: Optional[dict] = None,
 ):
     noise = torch.randn_like(latents)
     if hasattr(scheduler, "add_noise"):
@@ -157,6 +160,17 @@ def compute_total_loss(
 
     num_train_timesteps = int(getattr(scheduler.config, "num_train_timesteps", 1000))
     t_scaled = t.float() / float(num_train_timesteps)
+
+    selected_rotations = resolve_rotation_bucket(
+        residual_rotation_matrices,
+        residual_rotation_meta,
+        t,
+    )
+    if selected_rotations is not None:
+        denoiser.residual_rotation_matrices = selected_rotations.to(
+            device=latents.device,
+            dtype=prompt_embeds.dtype,
+        )
 
     with autocast(enabled=True):
         out = denoiser(
@@ -327,6 +341,7 @@ def train(args):
         print(f"[INFO] Loaded residual weights from {args.residual_weights_ckpt}")
 
     residual_rotation_matrices = None
+    residual_rotation_meta = None
     if args.residual_rotation_path is not None:
         rotations, saved_layers, meta = load_residual_procrustes(
             args.residual_rotation_path,
@@ -339,6 +354,7 @@ def train(args):
         residual_rotation_matrices = rotations
         if args.residual_origin_layer is None and isinstance(meta, dict):
             residual_origin_layer = meta.get("origin_layer", residual_origin_layer)
+        residual_rotation_meta = meta
 
     denoiser.set_residual_config(
         residual_origin_layer,
@@ -479,6 +495,8 @@ def train(args):
             prompt_embeds_mask=prompt_mask,
             img_shapes=img_shapes,
             txt_seq_lens=txt_seq_lens,
+            residual_rotation_matrices=residual_rotation_matrices,
+            residual_rotation_meta=residual_rotation_meta,
         )
 
         if args.residual_smoothness_weight > 0 and residual_weights.numel() > 1:

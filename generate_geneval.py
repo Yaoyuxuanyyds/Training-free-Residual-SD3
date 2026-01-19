@@ -29,6 +29,7 @@ class SD3ImageGenerator:
         residual_origin_layer=None,
         residual_weights=None,
         residual_rotation_matrices=None,
+        residual_rotation_meta=None,
         residual_timestep_weight_fn=None,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -44,6 +45,7 @@ class SD3ImageGenerator:
         self.residual_origin_layer = residual_origin_layer
         self.residual_weights = residual_weights
         self.residual_rotation_matrices = residual_rotation_matrices
+        self.residual_rotation_meta = residual_rotation_meta
         self.residual_timestep_weight_fn = residual_timestep_weight_fn
 
 
@@ -58,6 +60,7 @@ class SD3ImageGenerator:
         residual_origin_layer=None,
         residual_weights=None,
         residual_rotation_matrices=None,
+        residual_rotation_meta=None,
         residual_timestep_weight_fn=None,
     ):
         # 优先级：函数参数 > 初始化参数
@@ -65,6 +68,11 @@ class SD3ImageGenerator:
         ro = residual_origin_layer if residual_origin_layer is not None else self.residual_origin_layer
         rw = residual_weights if residual_weights is not None else self.residual_weights
         rr = residual_rotation_matrices if residual_rotation_matrices is not None else self.residual_rotation_matrices
+        rr_meta = (
+            residual_rotation_meta
+            if residual_rotation_meta is not None
+            else self.residual_rotation_meta
+        )
         rtw = (
             residual_timestep_weight_fn
             if residual_timestep_weight_fn is not None
@@ -94,6 +102,7 @@ class SD3ImageGenerator:
                     residual_origin_layer=ro,
                     residual_weights=rw,
                     residual_rotation_matrices=rr,
+                    residual_rotation_meta=rr_meta,
                     residual_timestep_weight_fn=rtw,
                 )
         return img
@@ -176,6 +185,7 @@ def main(args):
 
     # ===== 初始化生成器（每张卡一次）=====
     residual_rotation_matrices = None
+    residual_rotation_meta = None
     if args.residual_procrustes_path is not None:
         residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
             args.residual_procrustes_path
@@ -185,6 +195,7 @@ def main(args):
         )
         if args.residual_origin_layer is None and isinstance(meta, dict):
             args.residual_origin_layer = meta.get("origin_layer")
+        residual_rotation_meta = meta
 
     if args.residual_weights is None and args.residual_weights_path is not None:
         args.residual_weights = load_residual_weights(args.residual_weights_path)
@@ -196,6 +207,7 @@ def main(args):
         residual_origin_layer=args.residual_origin_layer,
         residual_weights=args.residual_weights,
         residual_rotation_matrices=residual_rotation_matrices,
+        residual_rotation_meta=residual_rotation_meta,
         residual_timestep_weight_fn=build_timestep_residual_weight_fn(
             args.timestep_residual_weight_fn,
             power=args.timestep_residual_weight_power,

@@ -7,7 +7,7 @@ from transformer import SD3Transformer2DModel_Vanilla, SD3Transformer2DModel_REP
 from torch.nn.parallel import DistributedDataParallel
 from torch import nn
 from torch.amp import autocast
-from util import set_seed
+from util import set_seed, resolve_rotation_bucket
 
 from typing import Callable, Optional
 import torch
@@ -391,6 +391,7 @@ class SD3Euler(StableDiffusion3Base):
         residual_weights: Optional[List[float]] = None,
         residual_use_layernorm: bool = True,  # ⭐ 新增
         residual_rotation_matrices: Optional[torch.Tensor] = None,
+        residual_rotation_meta: Optional[dict] = None,
         residual_timestep_weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]] = None,
     ):
         imgH, imgW = img_shape if img_shape is not None else (1024, 1024)
@@ -420,6 +421,11 @@ class SD3Euler(StableDiffusion3Base):
                 device=self.device_diff,
                 dtype=self.dtype,
             )
+            selected_rotations = resolve_rotation_bucket(
+                residual_rotation_matrices,
+                residual_rotation_meta,
+                timestep,
+            )
 
             pred_v = self.predict_vector_residual(
                 z, timestep, prompt_emb, pooled_emb,
@@ -427,7 +433,7 @@ class SD3Euler(StableDiffusion3Base):
                 residual_origin_layer=residual_origin_layer,
                 residual_weights=effective_residual_weights,
                 residual_use_layernorm=residual_use_layernorm,  # ⭐ 传递
-                residual_rotation_matrices=residual_rotation_matrices,
+                residual_rotation_matrices=selected_rotations,
             )
 
             pred_null_v = (
@@ -437,7 +443,7 @@ class SD3Euler(StableDiffusion3Base):
                     residual_origin_layer=residual_origin_layer,
                     residual_weights=effective_residual_weights,
                     residual_use_layernorm=residual_use_layernorm,  # ⭐ 传递
-                    residual_rotation_matrices=residual_rotation_matrices,
+                    residual_rotation_matrices=selected_rotations,
                 )
                 if cfg_scale != 1.0 else 0.0
             )

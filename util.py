@@ -141,7 +141,31 @@ def select_residual_rotations(
         )
 
     indices = [saved_layers_list.index(layer) for layer in residual_target_layers]
+    if rotation_matrices.dim() == 4:
+        return rotation_matrices[:, indices], residual_target_layers
     return rotation_matrices[indices], residual_target_layers
+
+
+def resolve_rotation_bucket(
+    rotation_matrices: Optional[torch.Tensor],
+    meta: Optional[dict],
+    timestep: torch.Tensor,
+) -> Optional[torch.Tensor]:
+    if rotation_matrices is None:
+        return None
+    if rotation_matrices.dim() < 4:
+        return rotation_matrices
+    if not isinstance(meta, dict):
+        raise ValueError("Bucketed rotation matrices require metadata with timestep bucket edges.")
+    bucket_edges = meta.get("timestep_bucket_edges")
+    if bucket_edges is None:
+        raise ValueError("Missing timestep_bucket_edges for bucketed rotation matrices.")
+    if torch.is_tensor(bucket_edges):
+        bucket_edges = bucket_edges.detach().cpu().tolist()
+    t_val = float(timestep.reshape(-1)[0].item())
+    bucket_idx = int(np.searchsorted(bucket_edges, t_val, side="right") - 1)
+    bucket_idx = max(min(bucket_idx, len(bucket_edges) - 2), 0)
+    return rotation_matrices[bucket_idx]
 
 
 def load_residual_weights(path: str) -> torch.Tensor:

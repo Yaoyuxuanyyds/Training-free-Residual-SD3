@@ -17,7 +17,13 @@ import yaml
 
 from dataset.datasets import CachedFeatureDataset_Packed, collate_fn_packed, get_target_dataset
 from sampler import SD3Euler
-from util import get_transform, load_residual_procrustes, select_residual_rotations, set_seed
+from util import (
+    get_transform,
+    load_residual_procrustes,
+    select_residual_rotations,
+    set_seed,
+    resolve_rotation_bucket,
+)
 
 import torch.multiprocessing as mp
 
@@ -102,6 +108,7 @@ def compute_total_loss(
     residual_weights: Optional[torch.Tensor] = None,
     residual_use_layernorm: bool = True,
     residual_rotation_matrices: Optional[torch.Tensor] = None,
+    residual_rotation_meta: Optional[dict] = None,
 ):
     device = x0.device
     B = x0.shape[0]
@@ -111,6 +118,12 @@ def compute_total_loss(
     x1 = torch.randn_like(x0)
     x_s = (1 - s) * x0 + s * x1
     v_target = x1 - x0
+
+    selected_rotations = resolve_rotation_bucket(
+        residual_rotation_matrices,
+        residual_rotation_meta,
+        t,
+    )
 
     with autocast(enabled=True):
         out = denoiser(
@@ -123,7 +136,7 @@ def compute_total_loss(
             residual_origin_layer=residual_origin_layer,
             residual_weights=residual_weights,
             residual_use_layernorm=residual_use_layernorm,
-            residual_rotation_matrices=residual_rotation_matrices,
+            residual_rotation_matrices=selected_rotations,
         )
         v_pred = out["sample"]
         denoise_loss = F.mse_loss(v_pred, v_target)
@@ -270,8 +283,9 @@ def train(args):
         print(f"[INFO] Loaded residual weights from {args.residual_weights_ckpt}")
 
     residual_rotation_matrices = None
+    residual_rotation_meta = None
     if args.residual_rotation_path is not None:
-        rotations, saved_layers, _ = load_residual_procrustes(
+        rotations, saved_layers, meta = load_residual_procrustes(
             args.residual_rotation_path,
             device=device,
             dtype=torch.float32,
@@ -280,6 +294,7 @@ def train(args):
             rotations, saved_layers, residual_target_layers
         )
         residual_rotation_matrices = rotations
+        residual_rotation_meta = meta
 
     optimizer = torch.optim.AdamW(
         [{"params": [residual_weights_raw], "lr": args.lr, "weight_decay": args.wd}]
@@ -369,6 +384,7 @@ def train(args):
             residual_weights=residual_weights,
             residual_use_layernorm=args.residual_use_layernorm,
             residual_rotation_matrices=residual_rotation_matrices,
+            residual_rotation_meta=residual_rotation_meta,
         )
 
         if args.residual_smoothness_weight > 0 and residual_weights.numel() > 1:
@@ -456,6 +472,7 @@ def train(args):
                     "residual_weights": residual_weights.detach(),
                     "residual_use_layernorm": args.residual_use_layernorm,
                     "residual_rotation_matrices": residual_rotation_matrices,
+                    "residual_rotation_meta": residual_rotation_meta,
                 }
                 eval_model(
                     args,
