@@ -124,6 +124,7 @@ class FluxTransformer2DModel_RES(nn.Module):
         2. 修复整数权重的类型错误
         3. 仅保存源层输入block前的特征（参考代码逻辑，减少显存占用）
         4. 标准化空间叠加残差：z-score → 叠加 → LayerNorm → 恢复分布
+        5. residual_target_layers 支持单流块索引（从双流块数量开始计数）
         """
         # 2. 处理时间步嵌入（严格对齐 FLUX 原生逻辑）
         timestep = timestep.to(hidden_states.dtype) * 1000
@@ -209,6 +210,7 @@ class FluxTransformer2DModel_RES(nn.Module):
             pre_encoder_states = []
 
         # 6. 遍历第一阶段：双流 Transformer 块（transformer_blocks）
+        num_transformer_blocks = len(self.base_model.transformer_blocks)
         for index_block, block in enumerate(self.base_model.transformer_blocks):
             if output_text_inputs and encoder_hidden_states is not None:
                 txt_input_states_list.append(encoder_hidden_states)
@@ -248,11 +250,39 @@ class FluxTransformer2DModel_RES(nn.Module):
                 joint_attention_kwargs=joint_attention_kwargs,
             )
 
-        # 7. 遍历第二阶段：单流 Transformer 块（无修改）
-        for block in self.base_model.single_transformer_blocks:
+        # 7. 遍历第二阶段：单流 Transformer 块
+        for index_block, block in enumerate(self.base_model.single_transformer_blocks):
             if output_text_inputs and encoder_hidden_states is not None:
                 txt_input_states_list.append(encoder_hidden_states)
-                
+
+            if use_residual and encoder_hidden_states is not None:
+                pre_encoder_states.append(encoder_hidden_states)
+                global_index = num_transformer_blocks + index_block
+
+                if global_index in residual_target_layers:
+                    tid = residual_target_layers.index(global_index)
+                    w = residual_weights_tensor[tid]
+
+                    if 0 <= residual_origin_layer < len(pre_encoder_states):
+                        origin_enc = pre_encoder_states[residual_origin_layer]
+                    else:
+                        raise ValueError(f"Invalid residual_origin_layer={residual_origin_layer}")
+
+                    if origin_enc.shape != encoder_hidden_states.shape:
+                        raise ValueError(
+                            f"[Residual] Shape mismatch: origin={origin_enc.shape} vs target={encoder_hidden_states.shape}"
+                        )
+
+                    rotation = residual_rotations[tid] if residual_rotations is not None else None
+                    encoder_hidden_states = self._apply_residual(
+                        encoder_hidden_states,
+                        origin_enc,
+                        w,
+                        use_layernorm=residual_use_layernorm,
+                        stop_grad=residual_stop_grad,
+                        rotation_matrix=rotation,
+                    )
+
             encoder_hidden_states, hidden_states = block(
                 hidden_states=hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
