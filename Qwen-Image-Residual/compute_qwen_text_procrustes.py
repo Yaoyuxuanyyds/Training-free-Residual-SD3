@@ -104,6 +104,37 @@ def _add_noise(scheduler, latents: torch.Tensor, timestep: torch.Tensor, generat
     return (1.0 - s) * latents + s * noise
 
 
+def _build_bucket_edges(num_train_timesteps: int, num_buckets: int) -> List[int]:
+    if num_buckets <= 1:
+        return [0, num_train_timesteps]
+    base = num_train_timesteps // num_buckets
+    remainder = num_train_timesteps % num_buckets
+    edges = [0]
+    for bucket_idx in range(num_buckets):
+        size = base + (1 if bucket_idx < remainder else 0)
+        edges.append(edges[-1] + size)
+    edges[-1] = num_train_timesteps
+    return edges
+
+
+def _bucket_timesteps(timesteps: torch.Tensor, bucket_edges: List[int]) -> List[List[int]]:
+    timesteps_list = timesteps.detach().cpu().tolist()
+    bucket_indices: List[List[int]] = []
+    for bucket_idx in range(len(bucket_edges) - 1):
+        start = bucket_edges[bucket_idx]
+        end = bucket_edges[bucket_idx + 1]
+        indices = [i for i, t in enumerate(timesteps_list) if start <= t < end]
+        if not indices:
+            center = (start + end) / 2.0
+            closest_idx = min(
+                range(len(timesteps_list)),
+                key=lambda i: abs(timesteps_list[i] - center),
+            )
+            indices = [closest_idx]
+        bucket_indices.append(indices)
+    return bucket_indices
+
+
 def run(args: argparse.Namespace):
     if args.seed is not None:
         random.seed(args.seed)
@@ -146,8 +177,14 @@ def run(args: argparse.Namespace):
     dataset = _build_dataset(args)
     total_pairs = len(dataset) if dataset is not None else 1
 
-    origin_chunks: List[torch.Tensor] = []
-    target_chunks: Dict[int, List[torch.Tensor]] = {layer: [] for layer in target_layers}
+    num_train_timesteps = int(pipe.scheduler.config.num_train_timesteps)
+    num_buckets = max(1, int(args.timestep_buckets))
+    bucket_edges = _build_bucket_edges(num_train_timesteps, num_buckets)
+
+    origin_chunks: List[List[torch.Tensor]] = [[] for _ in range(num_buckets)]
+    target_chunks: Dict[int, List[List[torch.Tensor]]] = {
+        layer: [[] for _ in range(num_buckets)] for layer in target_layers
+    }
 
     pair_iter: Iterable = _iterate_pairs(args, dataset)
     if dataset is not None:
@@ -194,44 +231,53 @@ def run(args: argparse.Namespace):
             mu=mu,
         )
 
-        gen_cpu = torch.Generator(device="cpu")
-        gen_cpu.manual_seed(int(args.seed or 0) + pair_idx)
-        t_index = int(torch.randint(0, len(timesteps), (1,), generator=gen_cpu).item())
-        t = timesteps[t_index]
-        t_tensor = t.expand(latents.shape[0]).to(latents.dtype)
+        bucket_indices = _bucket_timesteps(timesteps, bucket_edges)
 
-        gen_cuda = torch.Generator(device=device)
-        gen_cuda.manual_seed(int(args.seed or 0) + pair_idx)
-        z_t = _add_noise(pipe.scheduler, latents, t_tensor, generator=gen_cuda)
+        for bucket_idx, candidates in enumerate(bucket_indices):
+            gen_cpu = torch.Generator(device="cpu")
+            gen_cpu.manual_seed(int(args.seed or 0) + pair_idx * num_buckets + bucket_idx)
+            if len(candidates) == 1:
+                t_index = candidates[0]
+            else:
+                t_index = int(
+                    torch.randint(0, len(candidates), (1,), generator=gen_cpu).item()
+                )
+                t_index = candidates[t_index]
+            t = timesteps[t_index]
+            t_tensor = t.expand(latents.shape[0]).to(latents.dtype)
 
-        img_shapes = [[(1, args.height // pipe.vae_scale_factor // 2, args.width // pipe.vae_scale_factor // 2)]]
-        txt_seq_lens = prompt_emb_mask.sum(dim=1).tolist() if prompt_emb_mask is not None else None
+            gen_cuda = torch.Generator(device=device)
+            gen_cuda.manual_seed(int(args.seed or 0) + pair_idx * num_buckets + bucket_idx)
+            z_t = _add_noise(pipe.scheduler, latents, t_tensor, generator=gen_cuda)
 
-        with torch.no_grad():
-            outputs = denoiser(
-                hidden_states=z_t.to(dtype=denoiser.dtype),
-                timestep=t_tensor / 1000,
-                encoder_hidden_states=prompt_emb.to(dtype=denoiser.dtype),
-                encoder_hidden_states_mask=prompt_emb_mask,
-                img_shapes=img_shapes,
-                txt_seq_lens=txt_seq_lens,
-                return_dict=False,
-                output_text_inputs=True,
-            )
+            img_shapes = [[(1, args.height // pipe.vae_scale_factor // 2, args.width // pipe.vae_scale_factor // 2)]]
+            txt_seq_lens = prompt_emb_mask.sum(dim=1).tolist() if prompt_emb_mask is not None else None
 
-        txt_input_states = outputs.get("txt_input_states")
-        token_mask = prompt_emb_mask[0].to(torch.bool) if prompt_emb_mask is not None else None
+            with torch.no_grad():
+                outputs = denoiser(
+                    hidden_states=z_t.to(dtype=denoiser.dtype),
+                    timestep=t_tensor / 1000,
+                    encoder_hidden_states=prompt_emb.to(dtype=denoiser.dtype),
+                    encoder_hidden_states_mask=prompt_emb_mask,
+                    img_shapes=img_shapes,
+                    txt_seq_lens=txt_seq_lens,
+                    return_dict=False,
+                    output_text_inputs=True,
+                )
 
-        origin_state = txt_input_states[args.origin_layer][0].float().cpu()
-        if token_mask is not None:
-            origin_state = origin_state[token_mask.cpu()]
-        origin_chunks.append(origin_state)
+            txt_input_states = outputs.get("txt_input_states")
+            token_mask = prompt_emb_mask[0].to(torch.bool) if prompt_emb_mask is not None else None
 
-        for layer in target_layers:
-            target_state = txt_input_states[layer][0].float().cpu()
+            origin_state = txt_input_states[args.origin_layer][0].float().cpu()
             if token_mask is not None:
-                target_state = target_state[token_mask.cpu()]
-            target_chunks[layer].append(target_state)
+                origin_state = origin_state[token_mask.cpu()]
+            origin_chunks[bucket_idx].append(origin_state)
+
+            for layer in target_layers:
+                target_state = txt_input_states[layer][0].float().cpu()
+                if token_mask is not None:
+                    target_state = target_state[token_mask.cpu()]
+                target_chunks[layer][bucket_idx].append(target_state)
 
     def apply_simulated_ln(chunks_list: List[torch.Tensor]) -> torch.Tensor:
         processed = []
@@ -243,26 +289,47 @@ def run(args: argparse.Namespace):
             processed.append((x - mu) / st)
         return torch.cat(processed, dim=0)
 
-    print("[PROCESS] Applying Row-wise LN and Column-wise Centering...")
-    X_ln = apply_simulated_ln(origin_chunks)
-    # X_final = X_ln - X_ln.mean(dim=0, keepdim=True)
-    X_final = X_ln
+    print("[PROCESS] Applying Row-wise LN and optional Column-wise Centering...")
+    rotations_by_bucket: List[torch.Tensor] = []
+    num_valid_tokens: List[int] = []
+    X_final = None
 
-    rotations: List[torch.Tensor] = []
-    for layer in target_layers:
-        Y_ln = apply_simulated_ln(target_chunks[layer])
-        # Y_final = Y_ln - Y_ln.mean(dim=0, keepdim=True)
-        Y_final = Y_ln
-        
-        C = X_final.t().matmul(Y_final).to(torch.float32)
-        U, _, Vh = torch.linalg.svd(C, full_matrices=False)
-        R = U.matmul(Vh)
-        rotations.append(R)
+    for bucket_idx in range(num_buckets):
+        X_ln = apply_simulated_ln(origin_chunks[bucket_idx])
+        X_final = (
+            X_ln - X_ln.mean(dim=0, keepdim=True)
+            if args.col_center
+            else X_ln
+        )
+        num_valid_tokens.append(X_final.shape[0])
 
-        res = torch.norm(X_final.matmul(R) - Y_final, p="fro")
-        print(f"Layer {layer} alignment residual (Frobenius): {res:.4f}")
+        rotations: List[torch.Tensor] = []
+        for layer in target_layers:
+            Y_ln = apply_simulated_ln(target_chunks[layer][bucket_idx])
+            Y_final = (
+                Y_ln - Y_ln.mean(dim=0, keepdim=True)
+                if args.col_center
+                else Y_ln
+            )
 
-    rotation_stack = torch.stack(rotations, dim=0)
+            C = X_final.t().matmul(Y_final).to(torch.float32)
+            U, _, Vh = torch.linalg.svd(C, full_matrices=False)
+            R = U.matmul(Vh)
+            rotations.append(R)
+
+            res = torch.norm(X_final.matmul(R) - Y_final, p="fro")
+            print(
+                f"[Bucket {bucket_idx}] Layer {layer} alignment residual (Frobenius): {res:.4f}"
+            )
+
+        rotations_by_bucket.append(torch.stack(rotations, dim=0))
+
+    if num_buckets == 1:
+        rotation_stack = rotations_by_bucket[0]
+        num_valid_tokens_payload = num_valid_tokens[0]
+    else:
+        rotation_stack = torch.stack(rotations_by_bucket, dim=0)
+        num_valid_tokens_payload = num_valid_tokens
     if os.path.dirname(args.output):
         os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
@@ -270,9 +337,12 @@ def run(args: argparse.Namespace):
         "origin_layer": args.origin_layer,
         "target_layers": target_layers,
         "rotation_matrices": rotation_stack,
-        "feature_dim": X_final.shape[1],
-        "num_valid_tokens": X_final.shape[0],
-        "strategy": "row_ln_then_col_center",
+        "feature_dim": X_final.shape[1] if X_final is not None else None,
+        "num_valid_tokens": num_valid_tokens_payload,
+        "strategy": "row_ln_then_col_center" if args.col_center else "row_ln",
+        "column_center": args.col_center,
+        "timestep_buckets": num_buckets,
+        "timestep_bucket_edges": bucket_edges,
     }
     torch.save(payload, args.output)
     print(f"[DONE] Saved Procrustes rotations to {args.output}")
@@ -301,6 +371,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--origin_layer", type=int, default=1)
     parser.add_argument("--target_layers", type=int, nargs="*", default=None)
     parser.add_argument("--target_layer_start", type=int, default=2)
+    parser.add_argument("--col-center", action="store_true", help="Enable column-wise centering.")
+    parser.add_argument("--timestep-buckets", type=int, default=1)
 
     return parser
 

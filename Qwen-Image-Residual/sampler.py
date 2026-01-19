@@ -1,6 +1,7 @@
 from diffusers import QwenImagePipeline
 from diffusers.utils import BaseOutput
 from transformer import MyQwenImageTransformer2DModel
+from util import resolve_rotation_bucket
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Union
 import numpy as np
@@ -160,6 +161,7 @@ class MyQwenImagePipeline(QwenImagePipeline):
         residual_use_layernorm: bool = True,
         residual_stop_grad: bool = True,
         residual_rotation_matrices=None,
+        residual_rotation_meta: Optional[dict] = None,
         residual_timestep_weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]] = None,
         **kwargs,
     ):
@@ -214,6 +216,7 @@ class MyQwenImagePipeline(QwenImagePipeline):
         pipe._residual_use_layernorm = residual_use_layernorm
         pipe._residual_stop_grad = residual_stop_grad
         pipe._residual_rotation_matrices = residual_rotation_matrices
+        pipe._residual_rotation_meta = residual_rotation_meta
         pipe._residual_timestep_weight_fn = residual_timestep_weight_fn
         return pipe
 
@@ -278,6 +281,30 @@ class MyQwenImagePipeline(QwenImagePipeline):
             dtype=dtype,
         )
         self.transformer.set_residual_weights(effective_residual_weights)
+
+    def _update_residual_rotations_for_timestep(self, timestep: torch.Tensor, dtype: torch.dtype) -> None:
+        if (
+            self._residual_rotation_matrices is None
+            or self._residual_origin_layer is None
+            or not self._residual_target_layers
+        ):
+            return
+        rotation_matrices = self._residual_rotation_matrices
+        if not torch.is_tensor(rotation_matrices):
+            rotation_matrices = torch.tensor(rotation_matrices)
+        if rotation_matrices.dim() < 4:
+            return
+        selected_rotations = resolve_rotation_bucket(
+            rotation_matrices,
+            self._residual_rotation_meta,
+            timestep,
+        )
+        if selected_rotations is None:
+            return
+        self.transformer.residual_rotation_matrices = selected_rotations.to(
+            device=timestep.device,
+            dtype=dtype,
+        )
 
 
 
@@ -513,6 +540,7 @@ class MyQwenImagePipeline(QwenImagePipeline):
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
                 self._update_residual_weights_for_timestep(timestep, prompt_embeds.dtype)
+                self._update_residual_rotations_for_timestep(timestep, prompt_embeds.dtype)
                 
                 if i == target_timestep and collect:
                     with self.transformer.cache_context("cond"):

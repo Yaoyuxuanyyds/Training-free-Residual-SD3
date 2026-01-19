@@ -150,6 +150,7 @@ if __name__ == '__main__':
 
 
     residual_rotation_matrices = None
+    residual_rotation_meta = None
     if args.residual_procrustes_path is not None:
         residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
             args.residual_procrustes_path
@@ -159,6 +160,7 @@ if __name__ == '__main__':
         )
         if args.residual_origin_layer is None and isinstance(meta, dict):
             args.residual_origin_layer = meta.get("origin_layer")
+        residual_rotation_meta = meta
 
     if args.residual_weights is None and args.residual_weights_path is not None:
         args.residual_weights = load_residual_weights(args.residual_weights_path)
@@ -228,6 +230,7 @@ if __name__ == '__main__':
                         residual_origin_layer=args.residual_origin_layer,
                         residual_weights=args.residual_weights,
                         residual_rotation_matrices=residual_rotation_matrices,
+                        residual_rotation_meta=residual_rotation_meta,
                         residual_timestep_weight_fn=build_timestep_residual_weight_fn(
                             args.timestep_residual_weight_fn,
                             power=args.timestep_residual_weight_power,
@@ -279,6 +282,7 @@ if __name__ == '__main__':
                                         residual_origin_layer=args.residual_origin_layer,
                                         residual_weights=args.residual_weights,
                                         residual_rotation_matrices=residual_rotation_matrices,
+                                        residual_rotation_meta=residual_rotation_meta,
                                         residual_timestep_weight_fn=build_timestep_residual_weight_fn(
                                             args.timestep_residual_weight_fn,
                                             power=args.timestep_residual_weight_power,

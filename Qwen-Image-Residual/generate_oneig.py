@@ -83,6 +83,7 @@ class QwenImageGenerator:
         residual_origin_layer=None,
         residual_weights=None,
         residual_rotation_matrices=None,
+        residual_rotation_meta=None,
         residual_timestep_weight_fn=None,
         residual_use_layernorm=True,
         residual_stop_grad=True,
@@ -96,6 +97,7 @@ class QwenImageGenerator:
             residual_target_layers=residual_target_layers,
             residual_weights=residual_weights,
             residual_rotation_matrices=residual_rotation_matrices,
+            residual_rotation_meta=residual_rotation_meta,
             residual_timestep_weight_fn=residual_timestep_weight_fn,
             residual_use_layernorm=residual_use_layernorm,
             residual_stop_grad=residual_stop_grad,
@@ -211,6 +213,7 @@ def main(opt):
     set_seed(opt.seed)
 
     residual_rotation_matrices = None
+    residual_rotation_meta = None
     if opt.residual_procrustes_path is not None:
         residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
             opt.residual_procrustes_path
@@ -220,6 +223,7 @@ def main(opt):
         )
         if opt.residual_origin_layer is None and isinstance(meta, dict):
             opt.residual_origin_layer = meta.get("origin_layer")
+        residual_rotation_meta = meta
 
     if opt.residual_weights is None and opt.residual_weights_path is not None:
         opt.residual_weights = load_residual_weights(opt.residual_weights_path)
@@ -241,6 +245,7 @@ def main(opt):
         residual_origin_layer=opt.residual_origin_layer,
         residual_weights=opt.residual_weights,
         residual_rotation_matrices=residual_rotation_matrices,
+        residual_rotation_meta=residual_rotation_meta,
         residual_timestep_weight_fn=residual_timestep_weight_fn,
         residual_use_layernorm=bool(opt.residual_use_layernorm),
         residual_stop_grad=bool(opt.residual_stop_grad),

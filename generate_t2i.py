@@ -27,6 +27,7 @@ class SD3ImageGenerator:
         residual_origin_layer=None,
         residual_weights=None,
         residual_rotation_matrices=None,
+        residual_rotation_meta=None,
         residual_timestep_weight_fn=None,
     ):
         """
@@ -46,6 +47,7 @@ class SD3ImageGenerator:
         self.residual_origin_layer = residual_origin_layer
         self.residual_weights = residual_weights
         self.residual_rotation_matrices = residual_rotation_matrices
+        self.residual_rotation_meta = residual_rotation_meta
         self.residual_timestep_weight_fn = residual_timestep_weight_fn
 
     def generate(
@@ -59,6 +61,7 @@ class SD3ImageGenerator:
         residual_origin_layer=None,
         residual_weights=None,
         residual_rotation_matrices=None,
+        residual_rotation_meta=None,
         residual_timestep_weight_fn=None,
     ):
         """
@@ -71,6 +74,11 @@ class SD3ImageGenerator:
         ro = residual_origin_layer if residual_origin_layer is not None else self.residual_origin_layer
         rw = residual_weights if residual_weights is not None else self.residual_weights
         rr = residual_rotation_matrices if residual_rotation_matrices is not None else self.residual_rotation_matrices
+        rr_meta = (
+            residual_rotation_meta
+            if residual_rotation_meta is not None
+            else self.residual_rotation_meta
+        )
         rtw = (
             residual_timestep_weight_fn
             if residual_timestep_weight_fn is not None
@@ -103,6 +111,7 @@ class SD3ImageGenerator:
                     residual_origin_layer=ro,
                     residual_weights=rw,
                     residual_rotation_matrices=rr,
+                    residual_rotation_meta=rr_meta,
                     residual_timestep_weight_fn=rtw,
                 )
         return img
@@ -234,6 +243,7 @@ def main(opt):
 
     # ========= 加载一次生成器（每个进程 / 每张卡各自一份） =========
     residual_rotation_matrices = None
+    residual_rotation_meta = None
     if opt.residual_procrustes_path is not None:
         residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
             opt.residual_procrustes_path
@@ -243,6 +253,7 @@ def main(opt):
         )
         if opt.residual_origin_layer is None and isinstance(meta, dict):
             opt.residual_origin_layer = meta.get("origin_layer")
+        residual_rotation_meta = meta
 
     if opt.residual_weights is None and opt.residual_weights_path is not None:
         opt.residual_weights = load_residual_weights(opt.residual_weights_path)
@@ -254,6 +265,7 @@ def main(opt):
         residual_origin_layer=opt.residual_origin_layer,
         residual_weights=opt.residual_weights,
         residual_rotation_matrices=residual_rotation_matrices,
+        residual_rotation_meta=residual_rotation_meta,
         residual_timestep_weight_fn=build_timestep_residual_weight_fn(
             opt.timestep_residual_weight_fn,
             power=opt.timestep_residual_weight_power,
