@@ -178,6 +178,9 @@ def run(args: argparse.Namespace):
     ).to(device)
     pipe.transformer = FluxTransformer2DModel_RES(pipe.transformer).to(device=device, dtype=dtype)
     pipe.transformer.eval().requires_grad_(False)
+    guidance = None
+    if pipe.transformer.config.guidance_embeds:
+        guidance = torch.full([1], args.guidance_scale, device=device, dtype=torch.float32)
 
     dataset = _build_dataset(args)
     num_layers = len(pipe.transformer.base_model.transformer_blocks)
@@ -255,12 +258,17 @@ def run(args: argparse.Namespace):
                 pipe.scheduler, z0, timestep_idx, generator=gen_cuda
             )
 
+            prompt_emb_for_run = prompt_emb
+            if prompt_emb_for_run.dim() + 1 == z_t.dim():
+                prompt_emb_for_run = prompt_emb_for_run.unsqueeze(1)
+
             with torch.no_grad():
                 outputs = pipe.transformer(
                     hidden_states=z_t.to(dtype=pipe.transformer.dtype),
                     timestep=(t_tensor.to(dtype=pipe.transformer.dtype) / 1000.0),
+                    guidance=guidance,
                     pooled_projections=pooled_emb.to(dtype=pipe.transformer.dtype),
-                    encoder_hidden_states=prompt_emb.to(dtype=pipe.transformer.dtype),
+                    encoder_hidden_states=prompt_emb_for_run.to(dtype=pipe.transformer.dtype),
                     txt_ids=text_ids,
                     img_ids=latent_image_ids,
                     return_dict=False,
@@ -365,6 +373,7 @@ def main():
     parser.add_argument("--timestep-buckets", type=int, default=1)
     parser.add_argument("--col-center", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--guidance-scale", type=float, default=3.5)
     parser.add_argument("--output", type=str, required=True)
 
     args = parser.parse_args()
