@@ -21,7 +21,7 @@ CACHE_DIRS=(
 LOGDIR="./logs/learnable_residual"
 
 torchrun \
-  --nproc_per_node=4 \
+  --nproc_per_node=1 \
   train_residual_weights.py \
   --model_dir "${MODEL_KEY}" \
   --output_dir "${LOGDIR}" \
@@ -30,7 +30,7 @@ torchrun \
   --precompute_dir "${CACHE_DIRS[@]}" \
   --img_size 512 \
   --steps 2000 \
-  --batch_size 16 \
+  --batch_size 4 \
   --lr 1e-3 \
   --residual_origin_layer 1 \
   --residual_init 0.05 \
