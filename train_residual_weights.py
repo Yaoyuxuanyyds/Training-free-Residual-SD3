@@ -8,6 +8,7 @@ from typing import List, Optional
 import torch
 import torch.nn.functional as F
 from torch.cuda.amp import GradScaler, autocast
+from torch.utils.checkpoint import checkpoint
 import torch.distributed as dist
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
@@ -109,6 +110,8 @@ def compute_total_loss(
     residual_use_layernorm: bool = True,
     residual_rotation_matrices: Optional[torch.Tensor] = None,
     residual_rotation_meta: Optional[dict] = None,
+    use_autocast: bool = True,
+    use_checkpoint: bool = False,
 ):
     device = x0.device
     B = x0.shape[0]
@@ -125,8 +128,8 @@ def compute_total_loss(
         t,
     )
 
-    with autocast(enabled=True):
-        out = denoiser(
+    def denoiser_forward(x_s, t, prompt_emb, pooled_emb, residual_weights):
+        return denoiser(
             x_s,
             timestep=t,
             encoder_hidden_states=prompt_emb,
@@ -138,6 +141,20 @@ def compute_total_loss(
             residual_use_layernorm=residual_use_layernorm,
             residual_rotation_matrices=selected_rotations,
         )
+
+    with autocast(enabled=use_autocast):
+        if use_checkpoint:
+            out = checkpoint(
+                denoiser_forward,
+                x_s,
+                t,
+                prompt_emb,
+                pooled_emb,
+                residual_weights,
+                use_reentrant=False,
+            )
+        else:
+            out = denoiser_forward(x_s, t, prompt_emb, pooled_emb, residual_weights)
         v_pred = out["sample"]
         denoise_loss = F.mse_loss(v_pred, v_target)
 
@@ -216,6 +233,8 @@ def train(args):
         use_8bit=args.use_8bit,
         load_ckpt_path=None,
     )
+    if args.offload_text_encoders:
+        sampler_model.offload_text_encoders()
     denoiser = sampler_model.denoiser
     denoiser.requires_grad_(False)
     denoiser = denoiser.to(device=device, dtype=torch.float32)
@@ -349,14 +368,14 @@ def train(args):
             batch = next(data_iter)
         step += 1
 
-        prompt_emb = batch["prompt_emb"].to(device)
-        pooled_emb = batch["pooled_emb"].to(device)
-        x0 = batch["x0"].to(device)
-
-        if args.dtype == "float32":
-            prompt_emb = prompt_emb.float()
-            pooled_emb = pooled_emb.float()
-            x0 = x0.float()
+        target_dtype = torch.float16 if args.dtype == "float16" else torch.float32
+        prompt_emb = batch["prompt_emb"].to(
+            device=device, dtype=target_dtype, non_blocking=True
+        )
+        pooled_emb = batch["pooled_emb"].to(
+            device=device, dtype=target_dtype, non_blocking=True
+        )
+        x0 = batch["x0"].to(device=device, dtype=target_dtype, non_blocking=True)
 
         num_steps = sampler_model.scheduler.config.num_train_timesteps
         t = sample_timesteps(
@@ -385,6 +404,8 @@ def train(args):
             residual_use_layernorm=args.residual_use_layernorm,
             residual_rotation_matrices=residual_rotation_matrices,
             residual_rotation_meta=residual_rotation_meta,
+            use_autocast=scaler.is_enabled(),
+            use_checkpoint=args.activation_checkpoint,
         )
 
         if args.residual_smoothness_weight > 0 and residual_weights.numel() > 1:
@@ -462,6 +483,9 @@ def train(args):
                 eval_dir = osp.join(log_dir, f"val_{step}")
                 os.makedirs(eval_dir, exist_ok=True)
 
+                if args.offload_text_encoders:
+                    sampler_model.load_text_encoders(device=device)
+
                 _wrap = type("Wrap", (), {"sampler": sampler_model})()
                 sample_cfg = {
                     "NFE": 28,
@@ -481,6 +505,8 @@ def train(args):
                     eval_run_folder=eval_dir,
                     sample_cfg=sample_cfg,
                 )
+                if args.offload_text_encoders:
+                    sampler_model.offload_text_encoders()
     pbar.close()
 
     if rank == 0:
@@ -530,6 +556,16 @@ def main():
     parser.add_argument("--save_interval", type=int, default=500)
     parser.add_argument("--warmup_steps", type=int, default=500)
     parser.add_argument("--grad_clip", type=float, default=1.0)
+    parser.add_argument(
+        "--activation_checkpoint",
+        action="store_true",
+        help="使用梯度检查点以减少显存占用（会增加计算量）。",
+    )
+    parser.add_argument(
+        "--offload_text_encoders",
+        action="store_true",
+        help="在缓存特征训练时将文本 encoder 移到 CPU 以减少显存占用。",
+    )
 
     parser.add_argument("--logdir", type=str, default="./logs")
     parser.add_argument("--num_eval", type=int, default=20)
