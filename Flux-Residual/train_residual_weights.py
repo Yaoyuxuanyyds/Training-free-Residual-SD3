@@ -8,16 +8,47 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import tqdm
 
-from dataset.datasets import CachedFeatureDataset_Packed, collate_fn_packed
+from dataset.datasets import CachedFeatureDataset_Packed, collate_fn_packed, get_target_dataset
 from generate_image_res import FluxPipelineWithRES
 from flux_transformer_res import FluxTransformer2DModel_RES
-from util import load_residual_procrustes, select_residual_rotations, set_seed, resolve_rotation_bucket
+from util import (
+    get_transform,
+    load_residual_procrustes,
+    select_residual_rotations,
+    set_seed,
+    resolve_rotation_bucket,
+)
 
 
 def sample_timesteps(batch_size, num_steps, device, mode="uniform"):
     if mode == "uniform":
         return torch.randint(0, num_steps, (batch_size,), device=device)
     raise ValueError(f"Unknown mode: {mode}")
+
+
+def _extract_images_and_prompts(batch):
+    if isinstance(batch, dict):
+        images = batch.get("image") or batch.get("img") or batch.get("pixel_values")
+        prompts = batch.get("prompt") or batch.get("caption") or batch.get("text")
+        if images is None or prompts is None:
+            raise ValueError("Unable to extract image/prompt from batch dictionary.")
+        return images, prompts
+    if isinstance(batch, (list, tuple)):
+        if len(batch) < 2:
+            raise ValueError("Batch tuple does not contain image and prompt.")
+        return batch[0], batch[1]
+    raise TypeError(f"Unsupported batch type: {type(batch)}")
+
+
+@torch.no_grad()
+def encode_images_to_latents(pipe: FluxPipelineWithRES, images: torch.Tensor) -> torch.Tensor:
+    vae = pipe.vae
+    scaling = getattr(vae.config, "scaling_factor", 1.0)
+    shift = getattr(vae.config, "shift_factor", 0.0)
+    images = images.to(dtype=vae.dtype)
+    posterior = vae.encode(images * 2 - 1)
+    latent_pre = posterior.latent_dist.sample()
+    return (latent_pre - shift) * scaling
 
 
 def build_latent_image_ids(
@@ -115,19 +146,28 @@ def train(args):
     pipe.transformer = FluxTransformer2DModel_RES(pipe.transformer).to(device=device, dtype=torch.float32)
     pipe.transformer.eval().requires_grad_(False)
 
-    dataset = CachedFeatureDataset_Packed(
-        cache_dirs=args.precompute_dir,
-        target_batch_size=args.batch_size,
-        cache_meta=True,
-    )
+    use_cache = args.precompute_dir is not None
+    if use_cache:
+        dataset = CachedFeatureDataset_Packed(
+            cache_dirs=args.precompute_dir,
+            target_batch_size=args.batch_size,
+            cache_meta=True,
+        )
+    else:
+        if args.datadir is None or args.dataset is None:
+            raise ValueError("datadir and dataset must be provided when precompute_dir is not set.")
+        transform = get_transform(args.img_size)
+        dataset = get_target_dataset(args.dataset, args.datadir, train=True, transform=transform)
+
     loader = DataLoader(
         dataset,
-        batch_size=1,
+        batch_size=1 if use_cache else args.batch_size,
         shuffle=True,
         num_workers=8,
         pin_memory=False,
         persistent_workers=True,
-        collate_fn=collate_fn_packed,
+        collate_fn=collate_fn_packed if use_cache else None,
+        drop_last=not use_cache,
     )
 
     num_layers = len(pipe.transformer.base_model.transformer_blocks)
@@ -172,10 +212,26 @@ def train(args):
         for batch in loader:
             if global_step >= args.steps:
                 break
-            x0 = batch["x0"].to(device=device, dtype=torch.float32)
-            prompt_emb = batch["prompt_emb"].to(device=device, dtype=torch.float32)
-            pooled_emb = batch["pooled_emb"].to(device=device, dtype=torch.float32)
-            text_ids = batch["text_ids"].to(device=device)
+            if use_cache:
+                x0 = batch["x0"].to(device=device, dtype=torch.float32)
+                prompt_emb = batch["prompt_emb"].to(device=device, dtype=torch.float32)
+                pooled_emb = batch["pooled_emb"].to(device=device, dtype=torch.float32)
+                text_ids = batch["text_ids"].to(device=device)
+            else:
+                images, prompts = _extract_images_and_prompts(batch)
+                images = images.to(device=device, dtype=torch.float32)
+                if isinstance(prompts, (list, tuple)):
+                    prompts = list(prompts)
+                else:
+                    prompts = [str(prompts)]
+                with torch.no_grad():
+                    prompt_emb, pooled_emb, text_ids, _ = pipe.encode_prompt(
+                        prompt=prompts,
+                        device=device,
+                        num_images_per_prompt=1,
+                        max_sequence_length=args.max_sequence_length,
+                    )
+                    x0 = encode_images_to_latents(pipe, images).to(dtype=torch.float32)
 
             t = sample_timesteps(
                 batch_size=x0.shape[0],
@@ -240,7 +296,9 @@ def train(args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-dir", type=str, required=True)
-    parser.add_argument("--precompute-dir", type=str, nargs="+", required=True)
+    parser.add_argument("--precompute-dir", type=str, nargs="+", default=None)
+    parser.add_argument("--dataset", type=str, default=None)
+    parser.add_argument("--datadir", type=str, default=None)
     parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--steps", type=int, default=1000)
@@ -248,6 +306,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--guidance-scale", type=float, default=3.5)
     parser.add_argument("--img-size", type=int, default=1024)
+    parser.add_argument("--max-sequence-length", type=int, default=512)
     parser.add_argument("--residual-origin-layer", type=int, default=None)
     parser.add_argument("--residual-target-layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual-rotation-path", type=str, default=None)
