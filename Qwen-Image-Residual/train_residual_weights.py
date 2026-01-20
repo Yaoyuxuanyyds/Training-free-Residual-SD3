@@ -46,6 +46,20 @@ def _ensure_prompt_mask(prompt_embeds: torch.Tensor, prompt_mask: Optional[torch
     raise ValueError("prompt_mask must be provided from encode_prompt or cached data.")
 
 
+def _extract_images_and_prompts(batch):
+    if isinstance(batch, dict):
+        images = batch.get("image") or batch.get("img") or batch.get("pixel_values")
+        prompts = batch.get("prompt") or batch.get("caption") or batch.get("text")
+        if images is None or prompts is None:
+            raise ValueError("Unable to extract image/prompt from batch dictionary.")
+        return images, prompts
+    if isinstance(batch, (list, tuple)):
+        if len(batch) < 2:
+            raise ValueError("Batch tuple does not contain image and prompt.")
+        return batch[0], batch[1]
+    raise TypeError(f"Unsupported batch type: {type(batch)}")
+
+
 def _pack_latents_if_needed(
     pipe: MyQwenImagePipeline,
     latents: torch.Tensor,
@@ -432,9 +446,12 @@ def train(args):
                 prompt_mask = prompt_mask.to(device)
             prompt_mask = _ensure_prompt_mask(prompt_embeds, prompt_mask)
         else:
-            images, prompts = batch
+            images, prompts = _extract_images_and_prompts(batch)
             images = images.to(device)
-            prompts_list = list(prompts)
+            if isinstance(prompts, (list, tuple)):
+                prompts_list = list(prompts)
+            else:
+                prompts_list = [str(prompts)]
 
             with torch.no_grad():
                 prompt_embeds, prompt_mask = pipe.encode_prompt(
