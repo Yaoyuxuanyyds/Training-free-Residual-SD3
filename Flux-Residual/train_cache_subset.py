@@ -32,9 +32,9 @@ def precompute_and_save_features(
     device: torch.device,
 ):
     cache_dtype = torch.float32
-    if args.precision == "fp16":
+    if args.dtype == "fp16":
         cache_dtype = torch.float16
-    elif args.precision == "bf16":
+    elif args.dtype == "bf16":
         cache_dtype = torch.bfloat16
     os.makedirs(precompute_dir, exist_ok=True)
     loader = DataLoader(
@@ -113,21 +113,21 @@ def main():
     parser.add_argument("--model-dir", type=str, required=True)
     parser.add_argument("--datadir", type=str, required=True)
     parser.add_argument("--dataset", type=str, required=True)
-    parser.add_argument("--output-dir", type=str, required=True)
+    parser.add_argument("--precompute_dir", type=str, required=True)
     parser.add_argument("--img-size", type=int, default=1024)
-    parser.add_argument("--pc-batch-size", type=int, default=4)
+    parser.add_argument("--pc-batch-size", type=int, default=1)
     parser.add_argument("--cache-group-size", type=int, default=256)
     parser.add_argument("--max-sequence-length", type=int, default=512)
-    parser.add_argument("--precision", type=str, default="bf16", choices=["fp16", "bf16", "fp32"])
+    parser.add_argument("--dtype", type=str, default="bf16", choices=["fp16", "bf16", "fp32"])
     parser.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
     set_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if args.precision == "fp16":
+    if args.dtype == "fp16":
         torch_dtype = torch.float16
-    elif args.precision == "bf16":
+    elif args.dtype == "bf16":
         torch_dtype = torch.bfloat16
     else:
         torch_dtype = torch.float32
@@ -143,7 +143,7 @@ def main():
     transform = get_transform(args.img_size)
     train_set = get_target_dataset(args.dataset, args.datadir, train=True, transform=transform)
 
-    precompute_and_save_features(args, train_set, args.output_dir, pipe, device)
+    precompute_and_save_features(args, train_set, args.precompute_dir, pipe, device)
 
 
 if __name__ == "__main__":

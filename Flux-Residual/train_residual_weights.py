@@ -174,7 +174,7 @@ def train(args):
     residual_origin_layer = args.residual_origin_layer if args.residual_origin_layer is not None else 1
     residual_target_layers = args.residual_target_layers
     if residual_target_layers is None:
-        residual_target_layers = list(range(residual_origin_layer + 1, num_layers - 1))
+        residual_target_layers = list(range(residual_origin_layer + 1, num_layers))
     if len(residual_target_layers) == 0:
         raise ValueError("residual_target_layers cannot be empty.")
 
@@ -295,23 +295,23 @@ def train(args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-dir", type=str, required=True)
-    parser.add_argument("--precompute-dir", type=str, nargs="+", default=None)
+    parser.add_argument("--model_dir", type=str, required=True)
+    parser.add_argument("--precompute_dir", type=str, nargs="+", default=None)
     parser.add_argument("--dataset", type=str, default=None)
     parser.add_argument("--datadir", type=str, default=None)
-    parser.add_argument("--output-dir", type=str, required=True)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--output_dir", type=str, required=True)
+    parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--guidance-scale", type=float, default=3.5)
-    parser.add_argument("--img-size", type=int, default=1024)
-    parser.add_argument("--max-sequence-length", type=int, default=512)
-    parser.add_argument("--residual-origin-layer", type=int, default=None)
-    parser.add_argument("--residual-target-layers", type=int, nargs="+", default=None)
-    parser.add_argument("--residual-rotation-path", type=str, default=None)
-    parser.add_argument("--residual-init", type=float, default=0.1)
-    parser.add_argument("--log-every", type=int, default=50)
+    parser.add_argument("--guidance_scale", type=float, default=3.5)
+    parser.add_argument("--img_size", type=int, default=512)
+    parser.add_argument("--max_sequence_length", type=int, default=256)
+    parser.add_argument("--residual_origin_layer", type=int, default=None)
+    parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
+    parser.add_argument("--residual_rotation_path", type=str, default=None)
+    parser.add_argument("--residual_init", type=float, default=0.1)
+    parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--save-every", type=int, default=200)
 
     args = parser.parse_args()
