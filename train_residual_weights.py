@@ -233,6 +233,8 @@ def train(args):
         use_8bit=args.use_8bit,
         load_ckpt_path=None,
     )
+    if args.offload_text_encoders:
+        sampler_model.offload_text_encoders()
     denoiser = sampler_model.denoiser
     denoiser.requires_grad_(False)
     denoiser = denoiser.to(device=device, dtype=torch.float32)
@@ -481,6 +483,9 @@ def train(args):
                 eval_dir = osp.join(log_dir, f"val_{step}")
                 os.makedirs(eval_dir, exist_ok=True)
 
+                if args.offload_text_encoders:
+                    sampler_model.load_text_encoders(device=device)
+
                 _wrap = type("Wrap", (), {"sampler": sampler_model})()
                 sample_cfg = {
                     "NFE": 28,
@@ -500,6 +505,8 @@ def train(args):
                     eval_run_folder=eval_dir,
                     sample_cfg=sample_cfg,
                 )
+                if args.offload_text_encoders:
+                    sampler_model.offload_text_encoders()
     pbar.close()
 
     if rank == 0:
@@ -553,6 +560,11 @@ def main():
         "--activation_checkpoint",
         action="store_true",
         help="使用梯度检查点以减少显存占用（会增加计算量）。",
+    )
+    parser.add_argument(
+        "--offload_text_encoders",
+        action="store_true",
+        help="在缓存特征训练时将文本 encoder 移到 CPU 以减少显存占用。",
     )
 
     parser.add_argument("--logdir", type=str, default="./logs")

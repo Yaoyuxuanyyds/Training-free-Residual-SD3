@@ -143,6 +143,29 @@ class StableDiffusion3Base():
 
         del pipe
 
+    def offload_text_encoders(self, device: str = "cpu") -> None:
+        for name in ("text_enc_1", "text_enc_2", "text_enc_3"):
+            encoder = getattr(self, name, None)
+            if encoder is None:
+                continue
+            try:
+                encoder.to(device)
+            except (RuntimeError, NotImplementedError) as exc:
+                print(f"[WARN] Failed to offload {name} to {device}: {exc}")
+        if device == "cpu" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def load_text_encoders(self, device: Optional[str] = None) -> None:
+        target_device = device or self.device
+        for name in ("text_enc_1", "text_enc_2", "text_enc_3"):
+            encoder = getattr(self, name, None)
+            if encoder is None:
+                continue
+            try:
+                encoder.to(target_device)
+            except (RuntimeError, NotImplementedError) as exc:
+                print(f"[WARN] Failed to move {name} to {target_device}: {exc}")
+
     @torch.no_grad()
     def encode_prompt(self, prompt: List[str], batch_size: int = 1):
         # --- CLIP branch 1 ---
