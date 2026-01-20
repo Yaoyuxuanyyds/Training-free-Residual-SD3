@@ -134,6 +134,38 @@ def compute_total_loss(
     return denoise_loss
 
 
+def _normalize_prompt_data(
+    prompt_emb: torch.Tensor,
+    pooled_emb: torch.Tensor,
+    text_ids: torch.Tensor,
+    *,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if prompt_emb.ndim == 4 and prompt_emb.shape[1] == 1:
+        prompt_emb = prompt_emb[:, 0]
+    if pooled_emb.ndim == 3 and pooled_emb.shape[1] == 1:
+        pooled_emb = pooled_emb[:, 0]
+
+    if text_ids.ndim == 3 and text_ids.shape[0] == 1:
+        text_ids = text_ids[0]
+    elif text_ids.ndim == 2 and text_ids.shape[-1] == 3 and text_ids.shape[0] == prompt_emb.shape[0]:
+        text_ids = torch.zeros(
+            prompt_emb.shape[1],
+            3,
+            device=device,
+            dtype=prompt_emb.dtype,
+        )
+    elif text_ids.ndim == 1 and text_ids.shape[0] == 3:
+        text_ids = torch.zeros(
+            prompt_emb.shape[1],
+            3,
+            device=device,
+            dtype=prompt_emb.dtype,
+        )
+
+    return prompt_emb, pooled_emb, text_ids
+
+
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     set_seed(args.seed)
@@ -232,6 +264,13 @@ def train(args):
                         max_sequence_length=args.max_sequence_length,
                     )
                     x0 = encode_images_to_latents(pipe, images).to(dtype=torch.float32)
+
+            prompt_emb, pooled_emb, text_ids = _normalize_prompt_data(
+                prompt_emb,
+                pooled_emb,
+                text_ids,
+                device=device,
+            )
 
             t = sample_timesteps(
                 batch_size=x0.shape[0],
