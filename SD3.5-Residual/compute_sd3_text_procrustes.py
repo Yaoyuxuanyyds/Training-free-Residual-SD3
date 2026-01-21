@@ -164,6 +164,22 @@ def _build_bucket_edges(num_train_timesteps: int, num_buckets: int) -> List[int]
     edges[-1] = num_train_timesteps
     return edges
 
+def vae_latent_to_flux_tokens(z):
+    """
+    z: [B, 16, 128, 128]
+    return: [B, 4096, 64]
+    """
+    B, C, H, W = z.shape
+    assert C == 16
+    assert H % 2 == 0 and W % 2 == 0
+
+    # 2×2 patch
+    z = z.reshape(B, C, H // 2, 2, W // 2, 2)
+    z = z.permute(0, 2, 4, 1, 3, 5)          # [B, H/2, W/2, C, 2, 2]
+    z = z.reshape(B, (H // 2) * (W // 2), C * 4)
+
+    return z
+
 
 def run(args: argparse.Namespace):
     if args.seed is not None:
@@ -261,6 +277,9 @@ def run(args: argparse.Namespace):
                 pipe.scheduler, z0, timestep_idx, generator=gen_cuda
             )
 
+            z_t = vae_latent_to_flux_tokens(z_t)              # [1,4096,64]
+
+
             with torch.no_grad():
                 outputs = denoiser(
                     hidden_states=z_t.to(dtype=denoiser.dtype),
@@ -357,15 +376,15 @@ def parse_args():
     parser.add_argument("--model", type=str, default=DEFAULT_SD35_MODEL)
     parser.add_argument("--load_ckpt", type=str, default=None)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--precision", type=str, default="auto")
+    parser.add_argument("--precision", type=str, default="fp32")
     parser.add_argument("--seed", type=int, default=42)
 
     parser.add_argument("--prompt", type=str, default=None)
     parser.add_argument("--image", type=str, default=None)
-    parser.add_argument("--dataset", type=str, nargs="+", default=None)
-    parser.add_argument("--datadir", type=str, default=None)
-    parser.add_argument("--dataset_train", action="store_true")
-    parser.add_argument("--num_samples", type=int, default=100)
+    parser.add_argument("--dataset", type=str, nargs="+", default=["blip3o60k"])
+    parser.add_argument("--datadir", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/datasets")
+    parser.add_argument("--num-samples", type=int, default=-1)
+    parser.add_argument("--dataset-train", action="store_true")
 
     parser.add_argument("--height", type=int, default=1024)
     parser.add_argument("--width", type=int, default=1024)
@@ -377,8 +396,8 @@ def parse_args():
     parser.add_argument("--timestep_buckets", type=int, default=1)
     parser.add_argument("--col_center", action="store_true")
 
-    parser.add_argument("--outdir", type=str, default="./output")
-    parser.add_argument("--output", type=str, default="sd35_procrustes_rotations.pt")
+    parser.add_argument("--outdir", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/SD3.5-Residual/logs/procrustes_rotations/")
+    parser.add_argument("--output", type=str, default="procrustes_rotations_coco5k_ln_t1.pt")
 
     return parser.parse_args()
 

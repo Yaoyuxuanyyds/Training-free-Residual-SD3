@@ -329,6 +329,7 @@ def train(args):
                 prompt_emb = batch["prompt_emb"].to(device=device, dtype=torch.float32)
                 pooled_emb = batch["pooled_emb"].to(device=device, dtype=torch.float32)
                 text_ids = batch["text_ids"].to(device=device)
+                text_ids = text_ids.unsqueeze(1).expand(-1, prompt_emb.shape[1], -1)
             else:
                 images, prompts = _extract_images_and_prompts(batch)
                 images = images.to(device=device, dtype=torch.float32)
@@ -431,8 +432,8 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--guidance_scale", type=float, default=3.5)
-    parser.add_argument("--img_size", type=int, default=512)
-    parser.add_argument("--max_sequence_length", type=int, default=256)
+    parser.add_argument("--img_size", type=int, default=1024)
+    parser.add_argument("--max_sequence_length", type=int, default=512)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_rotation_path", type=str, default=None)
