@@ -313,15 +313,6 @@ import torchaudio.functional as TAF
 
 import numpy as np
 from sklearn.cross_decomposition import CCA
-
-try:
-    import pymp
-    pymp_available = True
-except ImportError:
-    pymp_available = False
-    print("Please install the pymp library using `pip install pymp` to speed up non-batched metrics")
-
-
 class AlignmentMetrics:
 
     SUPPORTED_METRICS = [
