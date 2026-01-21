@@ -15,6 +15,8 @@ from diffusers.image_processor import PipelineImageInput
 
 # 导入同一文件夹下的自定义Transformer（关键：解决SD35Transformer2DModel_RES未导入）
 from sd35_transformer_res import SD35Transformer2DModel_RES
+from sampler import build_timestep_residual_weight_fn
+from util import resolve_rotation_bucket
 
 # XLA相关定义（保持和官方源码一致）
 if is_torch_xla_available():
@@ -26,6 +28,48 @@ else:
 # -------------------------- 第二步：定义带残差参数的Pipeline（复用官方逻辑） --------------------------
 class SD35PipelineWithRES(StableDiffusion3Pipeline):
     """SD3.5 残差参数兼容Pipeline，完全复用官方逻辑，仅透传残差参数"""
+
+    @staticmethod
+    def _resolve_timestep_residual_weight(
+        timestep: torch.Tensor,
+        num_train_timesteps: int,
+        weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]],
+    ) -> Optional[torch.Tensor]:
+        if weight_fn is None:
+            return None
+        try:
+            weight = weight_fn(timestep, num_train_timesteps)
+        except TypeError:
+            weight = weight_fn(timestep)
+
+        if not torch.is_tensor(weight):
+            weight = torch.tensor(weight, device=timestep.device, dtype=timestep.dtype)
+        else:
+            weight = weight.to(device=timestep.device, dtype=timestep.dtype)
+
+        if weight.numel() > 1:
+            weight = weight.reshape(-1)[0]
+        return weight
+
+    @staticmethod
+    def _scale_residual_weights(
+        residual_weights: Optional[Union[List[float], torch.Tensor]],
+        timestep_weight: Optional[torch.Tensor],
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[torch.Tensor]:
+        if residual_weights is None:
+            return None
+        if timestep_weight is None:
+            if isinstance(residual_weights, torch.Tensor):
+                return residual_weights.to(device=device, dtype=dtype)
+            return torch.tensor(residual_weights, device=device, dtype=dtype)
+
+        if isinstance(residual_weights, torch.Tensor):
+            weights = residual_weights.to(device=device, dtype=dtype)
+        else:
+            weights = torch.tensor(residual_weights, device=device, dtype=dtype)
+        return weights * timestep_weight
 
     @torch.no_grad()
     def __call__(
@@ -66,7 +110,11 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
         # 新增残差参数（关键字参数，不破坏官方接口）
         residual_target_layers: Optional[List[int]] = None,
         residual_origin_layer: Optional[int] = None,
-        residual_weight: float = 0.0,
+        residual_weights: Optional[Union[List[float], torch.Tensor, float]] = None,
+        residual_use_layernorm: bool = True,
+        residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        residual_rotation_meta: Optional[dict] = None,
+        residual_timestep_weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]] = None,
     ) -> Union[tuple, StableDiffusion3PipelineOutput]:
         # 复用官方__call__的前置逻辑（直接调用父类的核心逻辑）
         # 1. 基础初始化（和官方完全一致）
@@ -196,6 +244,9 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
                 self._joint_attention_kwargs.update(ip_adapter_image_embeds=ip_adapter_image_embeds)
 
         # 8. 去噪循环（核心修改：透传残差参数）
+        weight_fn = None
+        if residual_weights is not None:
+            weight_fn = residual_timestep_weight_fn or build_timestep_residual_weight_fn()
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -204,9 +255,25 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
                 # 扩展latents用于CFG
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                 timestep = t.expand(latent_model_input.shape[0])
+                timestep_weight = self._resolve_timestep_residual_weight(
+                    timestep,
+                    self.scheduler.config.num_train_timesteps,
+                    weight_fn,
+                )
+                effective_residual_weights = self._scale_residual_weights(
+                    residual_weights,
+                    timestep_weight,
+                    device=latent_model_input.device,
+                    dtype=latent_model_input.dtype,
+                )
+                selected_rotations = resolve_rotation_bucket(
+                    residual_rotation_matrices,
+                    residual_rotation_meta,
+                    timestep,
+                )
 
                 # 第一次Transformer调用：正常噪声预测（透传残差参数）
-                noise_pred = self.transformer(
+                noise_pred_out = self.transformer(
                     hidden_states=latent_model_input,
                     timestep=timestep,
                     encoder_hidden_states=prompt_embeds,
@@ -215,8 +282,15 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
                     return_dict=False,
                     residual_target_layers=residual_target_layers,
                     residual_origin_layer=residual_origin_layer,
-                    residual_weight=residual_weight,
-                )[0]
+                    residual_weights=effective_residual_weights,
+                    residual_use_layernorm=residual_use_layernorm,
+                    residual_rotation_matrices=selected_rotations,
+                )
+                noise_pred = (
+                    noise_pred_out[0]
+                    if isinstance(noise_pred_out, (tuple, list))
+                    else noise_pred_out["sample"]
+                )
 
                 # CFG融合与skip_guidance_layers处理
                 if self.do_classifier_free_guidance:
@@ -232,7 +306,7 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
                         timestep = t.expand(latents.shape[0])
                         latent_model_input = latents
                         # 第二次Transformer调用：skip_guidance_layers预测（透传残差参数）
-                        noise_pred_skip_layers = self.transformer(
+                        noise_pred_skip_layers_out = self.transformer(
                             hidden_states=latent_model_input,
                             timestep=timestep,
                             encoder_hidden_states=original_prompt_embeds,
@@ -242,8 +316,15 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
                             skip_layers=skip_guidance_layers,
                             residual_target_layers=residual_target_layers,
                             residual_origin_layer=residual_origin_layer,
-                            residual_weight=residual_weight,
-                        )[0]
+                            residual_weights=effective_residual_weights,
+                            residual_use_layernorm=residual_use_layernorm,
+                            residual_rotation_matrices=selected_rotations,
+                        )
+                        noise_pred_skip_layers = (
+                            noise_pred_skip_layers_out[0]
+                            if isinstance(noise_pred_skip_layers_out, (tuple, list))
+                            else noise_pred_skip_layers_out["sample"]
+                        )
                         noise_pred = (
                             noise_pred + (noise_pred_text - noise_pred_skip_layers) * self._skip_layer_guidance_scale
                         )
@@ -311,7 +392,7 @@ if __name__ == "__main__":
         # 残差参数
         residual_target_layers=[6,7,8,9,10],
         residual_origin_layer=1,
-        residual_weight=0,
+        residual_weights=0,
     ).images[0]
 
     # 保存图片（建议文件名包含种子，方便追溯）
