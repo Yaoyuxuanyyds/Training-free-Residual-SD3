@@ -4,6 +4,7 @@ import os.path as osp
 from typing import List, Optional
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import tqdm
@@ -182,8 +183,40 @@ def vae_latent_to_flux_tokens(z):
     return z
 
 
+class ResidualWeightsModule(torch.nn.Module):
+    def __init__(self, residual_init: float, num_layers: int, device: torch.device):
+        super().__init__()
+        residual_init_tensor = torch.tensor(residual_init, device=device, dtype=torch.float32)
+        residual_init_tensor = torch.clamp(residual_init_tensor, min=1e-6)
+        self.residual_weights_raw = torch.nn.Parameter(
+            self._softplus_inverse(residual_init_tensor).repeat(num_layers)
+        )
+
+    @staticmethod
+    def _softplus_inverse(x: torch.Tensor) -> torch.Tensor:
+        return torch.where(x > 20, x, torch.log(torch.expm1(x)))
+
+
+def _setup_distributed() -> tuple[bool, int, int, int]:
+    if not torch.cuda.is_available():
+        return False, 0, 0, 1
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if world_size <= 1:
+        return False, 0, 0, 1
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl", init_method="env://")
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    rank = dist.get_rank()
+    return True, local_rank, rank, world_size
+
+
 def train(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    distributed, local_rank, rank, _ = _setup_distributed()
+    if distributed:
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     set_seed(args.seed)
 
     pipe = FluxPipelineWithRES.from_pretrained(
@@ -207,15 +240,24 @@ def train(args):
         transform = get_transform(args.img_size)
         dataset = get_target_dataset(args.dataset, args.datadir, train=True, transform=transform)
 
+    sampler = None
+    if distributed:
+        sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset,
+            shuffle=True,
+            drop_last=not use_cache,
+        )
+
     loader = DataLoader(
         dataset,
         batch_size=1 if use_cache else args.batch_size,
-        shuffle=True,
+        shuffle=(sampler is None),
         num_workers=4,
         pin_memory=False,
         persistent_workers=True,
         collate_fn=collate_fn_packed if use_cache else None,
         drop_last=not use_cache,
+        sampler=sampler,
     )
 
     num_layers = len(pipe.transformer.base_model.transformer_blocks) + len(pipe.transformer.base_model.single_transformer_blocks)
@@ -241,22 +283,30 @@ def train(args):
         if args.residual_origin_layer is None and isinstance(meta, dict):
             residual_origin_layer = meta.get("origin_layer", residual_origin_layer)
 
-    def softplus_inverse(x: torch.Tensor) -> torch.Tensor:
-        return torch.where(x > 20, x, torch.log(torch.expm1(x)))
-
-    residual_init = torch.tensor(args.residual_init, device=device, dtype=torch.float32)
-    residual_init = torch.clamp(residual_init, min=1e-6)
-    residual_weights_raw = torch.nn.Parameter(
-        softplus_inverse(residual_init).repeat(len(residual_target_layers))
+    residual_module = ResidualWeightsModule(
+        residual_init=args.residual_init,
+        num_layers=len(residual_target_layers),
+        device=device,
     )
+    if distributed:
+        residual_module = torch.nn.parallel.DistributedDataParallel(
+            residual_module,
+            device_ids=[local_rank],
+            output_device=local_rank,
+        )
 
-    optimizer = torch.optim.AdamW([residual_weights_raw], lr=args.lr)
+    optimizer = torch.optim.AdamW(residual_module.parameters(), lr=args.lr)
 
     os.makedirs(args.output_dir, exist_ok=True)
     global_step = 0
-    pbar = tqdm.tqdm(total=args.steps, desc="[Flux Residual Weights]")
+    is_main_process = rank == 0
+    pbar = tqdm.tqdm(total=args.steps, desc="[Flux Residual Weights]", disable=not is_main_process)
+    epoch = 0
 
     while global_step < args.steps:
+        if sampler is not None:
+            sampler.set_epoch(epoch)
+            epoch += 1
         for batch in loader:
             if global_step >= args.steps:
                 break
@@ -295,6 +345,7 @@ def train(args):
                 device=device,
             )
 
+            residual_weights_raw = residual_module.module.residual_weights_raw if distributed else residual_module.residual_weights_raw
             residual_weights = F.softplus(residual_weights_raw)
 
             loss = compute_total_loss(
@@ -317,10 +368,10 @@ def train(args):
             loss.backward()
             optimizer.step()
 
-            if global_step % args.log_every == 0:
+            if is_main_process and global_step % args.log_every == 0:
                 print(f"[Step {global_step}] loss={loss.item():.6f} weights={residual_weights.detach().cpu()}")
 
-            if args.save_every > 0 and global_step % args.save_every == 0:
+            if is_main_process and args.save_every > 0 and global_step % args.save_every == 0:
                 save_path = osp.join(args.output_dir, f"residual_weights_step{global_step}.pth")
                 torch.save(
                     {
@@ -337,16 +388,21 @@ def train(args):
             if global_step >= args.steps:
                 break
 
-    final_path = osp.join(args.output_dir, "residual_weights_final.pth")
-    torch.save(
-        {
-            "residual_weights": F.softplus(residual_weights_raw).detach().cpu(),
-            "residual_target_layers": residual_target_layers,
-            "residual_origin_layer": residual_origin_layer,
-        },
-        final_path,
-    )
-    print(f"[DONE] Saved final weights to {final_path}")
+    if is_main_process:
+        final_path = osp.join(args.output_dir, "residual_weights_final.pth")
+        residual_weights_raw = residual_module.module.residual_weights_raw if distributed else residual_module.residual_weights_raw
+        torch.save(
+            {
+                "residual_weights": F.softplus(residual_weights_raw).detach().cpu(),
+                "residual_target_layers": residual_target_layers,
+                "residual_origin_layer": residual_origin_layer,
+            },
+            final_path,
+        )
+        print(f"[DONE] Saved final weights to {final_path}")
+    if distributed and dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 def main():
