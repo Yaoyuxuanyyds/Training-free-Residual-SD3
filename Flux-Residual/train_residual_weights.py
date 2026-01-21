@@ -210,6 +210,19 @@ def _setup_distributed() -> tuple[bool, int, int, int]:
     return True, local_rank, rank, world_size
 
 
+def _offload_cache_modules(pipe: FluxPipelineWithRES) -> None:
+    modules = []
+    for name in ("vae", "text_encoder", "text_encoder_2"):
+        module = getattr(pipe, name, None)
+        if module is not None:
+            modules.append((name, module))
+    for name, module in modules:
+        module.to("cpu")
+        setattr(pipe, name, None)
+    if modules:
+        torch.cuda.empty_cache()
+
+
 def train(args):
     distributed, local_rank, rank, _ = _setup_distributed()
     if distributed:
@@ -234,6 +247,7 @@ def train(args):
             target_batch_size=args.batch_size,
             cache_meta=True,
         )
+        _offload_cache_modules(pipe)
     else:
         if args.datadir is None or args.dataset is None:
             raise ValueError("datadir and dataset must be provided when precompute_dir is not set.")
