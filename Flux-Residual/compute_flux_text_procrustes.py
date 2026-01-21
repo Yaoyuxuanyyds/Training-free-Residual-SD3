@@ -386,7 +386,7 @@ def main():
 
     parser.add_argument("--height", type=int, default=1024)
     parser.add_argument("--width", type=int, default=1024)
-    parser.add_argument("--max-sequence-length", type=int, default=256)
+    parser.add_argument("--max-sequence-length", type=int, default=512)
 
     parser.add_argument("--timestep-buckets", type=int, default=1)
     parser.add_argument("--col-center", action="store_true")

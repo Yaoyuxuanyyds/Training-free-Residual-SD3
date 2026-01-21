@@ -15,7 +15,6 @@ import random
 from generate_image_res import FluxPipelineWithRES
 # 导入自定义残差Transformer（用于替换验证）
 from flux_transformer_res import FluxTransformer2DModel_RES
-from util import load_residual_procrustes, select_residual_rotations, load_residual_weights
 
 
 # -------------------------- 工具函数（不变）--------------------------
@@ -37,9 +36,7 @@ class FluxGenevalGenerator:
         model_path: str,
         residual_target_layers: Optional[List[int]] = None,
         residual_origin_layer: Optional[int] = None,
-        residual_weights: Optional[List[float]] = None,
-        residual_rotation_matrices: Optional[torch.Tensor] = None,
-        residual_rotation_meta: Optional[dict] = None,
+        residual_weight: float = 1.0,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         if not self.device == "cuda":
@@ -78,9 +75,7 @@ class FluxGenevalGenerator:
         self.residual_config = {
             "residual_target_layers": residual_target_layers,
             "residual_origin_layer": residual_origin_layer,
-            "residual_weights": residual_weights,
-            "residual_rotation_matrices": residual_rotation_matrices,
-            "residual_rotation_meta": residual_rotation_meta,
+            "residual_weight": residual_weight,
         }
 
     def generate_single_image(
@@ -126,11 +121,9 @@ def parse_args():
                         default="/inspire/hdd/project/chineseculture/public/yuxuan/REPA-sd3-1/flux/geneval_outputs/out_test",
                         help="输出根目录")
     parser.add_argument("--n_samples", type=int, default=4, help="每个prompt生成的样本数")
-    parser.add_argument("--seed", type=int, default=42, help="基础随机种子")
+    parser.add_argument("--seed", type=int, default=0, help="基础随机种子")
     parser.add_argument("--batch_size", type=int, default=16, help="网格图每行显示数量")
     parser.add_argument("--skip_grid", action="store_true", help="是否跳过生成网格图")
-    parser.add_argument("--world_size", type=int, default=1)
-    parser.add_argument("--rank", type=int, default=0)
 
     # Flux生成参数
     parser.add_argument("--model_path", type=str,
@@ -140,17 +133,13 @@ def parse_args():
     parser.add_argument("--guidance_scale", type=float, default=3.5, help="文本引导强度")
     parser.add_argument("--img_size", type=int, default=1024, help="生成图像尺寸（正方形）")
 
-    # 残差参数（与SD3一致）
-    parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None,
+    # 残差参数
+    parser.add_argument("--residual_target_layers", type=int, nargs="+", default=[6,7,8,9,10],
                         help="残差目标层索引列表（如：--residual_target_layers 6 7 8）")
-    parser.add_argument("--residual_origin_layer", type=int, default=None,
+    parser.add_argument("--residual_origin_layer", type=int, default=1,
                         help="残差源层索引（必须是双流块索引）")
-    parser.add_argument("--residual_weights", type=float, nargs="+", default=None,
-                        help="残差叠加权重（支持多层权重）")
-    parser.add_argument("--residual_weights_path", type=str, default=None,
-                        help="从文件加载学习得到的残差权重")
-    parser.add_argument("--residual_procrustes_path", type=str, default=None,
-                        help="Procrustes旋转矩阵路径")
+    parser.add_argument("--residual_weight", type=float, default=0.1,
+                        help="残差叠加权重（建议0.1~0.5）")
 
     return parser.parse_args()
 
@@ -168,42 +157,15 @@ def main(opt):
     print(f"[INFO] 共加载 {len(metadatas)} 个prompt")
 
     # 初始化生成器（使用导入的Pipeline）
-    residual_rotation_matrices = None
-    residual_rotation_meta = None
-    if opt.residual_procrustes_path is not None:
-        residual_rotation_matrices, target_layers, meta = load_residual_procrustes(
-            opt.residual_procrustes_path
-        )
-        residual_rotation_matrices, opt.residual_target_layers = select_residual_rotations(
-            residual_rotation_matrices, target_layers, opt.residual_target_layers
-        )
-        if opt.residual_origin_layer is None and isinstance(meta, dict):
-            opt.residual_origin_layer = meta.get("origin_layer")
-        residual_rotation_meta = meta
-
-    if opt.residual_weights is None and opt.residual_weights_path is not None:
-        opt.residual_weights = load_residual_weights(opt.residual_weights_path).tolist()
-        print(f"Residual weights: {opt.residual_weights}")
-        print(f"Num res weights: {len(opt.residual_weights)}")
-        print(f"Num res targets: {len(opt.residual_target_layers) if opt.residual_target_layers else 0}")
-
     generator = FluxGenevalGenerator(
         model_path=opt.model_path,
         residual_target_layers=opt.residual_target_layers,
         residual_origin_layer=opt.residual_origin_layer,
-        residual_weights=opt.residual_weights,
-        residual_rotation_matrices=residual_rotation_matrices,
-        residual_rotation_meta=residual_rotation_meta,
+        residual_weight=opt.residual_weight,
     )
 
     # 批量生成
-    metadatas_with_idx = list(enumerate(metadatas))
-    if opt.world_size > 1:
-        metadatas_with_idx = [
-            (i, m) for i, m in metadatas_with_idx if i % opt.world_size == opt.rank
-        ]
-        print(f"[Rank {opt.rank}] total prompts={len(metadatas_with_idx)}")
-    for prompt_idx, metadata in metadatas_with_idx:
+    for prompt_idx, metadata in enumerate(metadatas):
         prompt = metadata["prompt"]
         prompt_dir = os.path.join(opt.outdir, f"{prompt_idx:05d}")
         sample_dir = os.path.join(prompt_dir, "samples")

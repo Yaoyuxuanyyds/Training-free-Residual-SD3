@@ -27,7 +27,7 @@ torchrun \
   --precompute_dir "${CACHE_DIRS[@]}" \
   --logdir "${LOGDIR}" \
   --dataset "${DATASET}" \
-  --img_size 512 \
+  --img_size 1024 \
   --steps 5000 \
   --batch_size 32 \
   --lr 1e-3 \
@@ -40,7 +40,73 @@ torchrun \
   --save_interval 500 \
   --grad_clip 1.0 \
   --residual_origin_layer 1 \
-  --residual_init 0.05 \
+  --residual_init 0.025 \
+  --init_mode "constant" \
+  --residual_use_layernorm 1 \
+  --residual_smoothness_weight 0.0 \
+    # --residual_rotation_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln.pt \
+
+
+
+
+
+
+
+torchrun \
+  --nproc_per_node=8 \
+  train_residual_weights.py \
+  --model_key "${MODEL_KEY}" \
+  --datadir "${DATADIR}" \
+  --precompute_dir "${CACHE_DIRS[@]}" \
+  --logdir "${LOGDIR}" \
+  --dataset "${DATASET}" \
+  --img_size 1024 \
+  --steps 5000 \
+  --batch_size 32 \
+  --lr 1e-3 \
+  --wd 0.0 \
+  --dtype float32 \
+  --time_mode logitnorm \
+  --time_shift 0.0 \
+  --warmup_steps 100 \
+  --eval_interval 500 \
+  --save_interval 500 \
+  --grad_clip 1.0 \
+  --residual_origin_layer 1 \
+  --residual_init 0.1 \
+  --init_mode "constant" \
+  --residual_use_layernorm 1 \
+  --residual_smoothness_weight 0.0 \
+    # --residual_rotation_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln.pt \
+
+
+
+
+
+
+
+torchrun \
+  --nproc_per_node=8 \
+  train_residual_weights.py \
+  --model_key "${MODEL_KEY}" \
+  --datadir "${DATADIR}" \
+  --precompute_dir "${CACHE_DIRS[@]}" \
+  --logdir "${LOGDIR}" \
+  --dataset "${DATASET}" \
+  --img_size 1024 \
+  --steps 5000 \
+  --batch_size 32 \
+  --lr 1e-3 \
+  --wd 0.0 \
+  --dtype float32 \
+  --time_mode logitnorm \
+  --time_shift 0.0 \
+  --warmup_steps 100 \
+  --eval_interval 500 \
+  --save_interval 500 \
+  --grad_clip 1.0 \
+  --residual_origin_layer 1 \
+  --residual_init 0.01 \
   --init_mode "constant" \
   --residual_use_layernorm 1 \
   --residual_smoothness_weight 0.0 \

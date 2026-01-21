@@ -27,7 +27,6 @@ torchrun \
   --output_dir "${LOGDIR}" \
   --datadir "${DATADIR}" \
   --dataset "${DATASET}" \
-  --precompute_dir "${CACHE_DIRS[@]}" \
   --img_size 512 \
   --steps 2000 \
   --batch_size 4 \
