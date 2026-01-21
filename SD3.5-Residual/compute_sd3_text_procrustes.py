@@ -277,6 +277,9 @@ def run(args: argparse.Namespace):
                 pipe.scheduler, z0, timestep_idx, generator=gen_cuda
             )
 
+            z_t = vae_latent_to_flux_tokens(z_t)              # [1,4096,64]
+
+
             with torch.no_grad():
                 outputs = denoiser(
                     hidden_states=z_t.to(dtype=denoiser.dtype),
