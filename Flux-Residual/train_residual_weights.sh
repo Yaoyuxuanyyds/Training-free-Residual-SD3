@@ -33,5 +33,5 @@ torchrun \
   --lr 1e-3 \
   --residual_origin_layer 1 \
   --residual_init 0.05 \
-  --residual_rotation_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/Flux-Residual/logs/procrustes_rotations/procrustes_rotations_coco5k_ln_t5-full.pt \
+  # --residual_rotation_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/Flux-Residual/logs/procrustes_rotations/procrustes_rotations_coco5k_ln_t5-full.pt \
 

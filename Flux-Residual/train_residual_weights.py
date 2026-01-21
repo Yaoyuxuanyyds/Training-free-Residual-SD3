@@ -91,7 +91,7 @@ def compute_total_loss(
     B = x0.shape[0]
     T = int(pipe.scheduler.config.num_train_timesteps)
 
-    s = (t.float() / float(T)).view(B, 1, 1, 1)
+    s = (t.float() / float(T)).view(B, 1, 1)
     x1 = torch.randn_like(x0)
     x_s = (1 - s) * x0 + s * x1
     v_target = x1 - x0
@@ -165,6 +165,22 @@ def _normalize_prompt_data(
 
     return prompt_emb, pooled_emb, text_ids
 
+def vae_latent_to_flux_tokens(z):
+    """
+    z: [B, 16, 128, 128]
+    return: [B, 4096, 64]
+    """
+    B, C, H, W = z.shape
+    assert C == 16
+    assert H % 2 == 0 and W % 2 == 0
+
+    # 2×2 patch
+    z = z.reshape(B, C, H // 2, 2, W // 2, 2)
+    z = z.permute(0, 2, 4, 1, 3, 5)          # [B, H/2, W/2, C, 2, 2]
+    z = z.reshape(B, (H // 2) * (W // 2), C * 4)
+
+    return z
+
 
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -195,18 +211,18 @@ def train(args):
         dataset,
         batch_size=1 if use_cache else args.batch_size,
         shuffle=True,
-        num_workers=8,
+        num_workers=4,
         pin_memory=False,
         persistent_workers=True,
         collate_fn=collate_fn_packed if use_cache else None,
         drop_last=not use_cache,
     )
 
-    num_layers = len(pipe.transformer.base_model.transformer_blocks)
+    num_layers = len(pipe.transformer.base_model.transformer_blocks) + len(pipe.transformer.base_model.single_transformer_blocks)
     residual_origin_layer = args.residual_origin_layer if args.residual_origin_layer is not None else 1
     residual_target_layers = args.residual_target_layers
     if residual_target_layers is None:
-        residual_target_layers = list(range(residual_origin_layer + 1, num_layers))
+        residual_target_layers = list(range(residual_origin_layer + 1, num_layers-1))
     if len(residual_target_layers) == 0:
         raise ValueError("residual_target_layers cannot be empty.")
 
@@ -272,6 +288,7 @@ def train(args):
                 device=device,
             )
 
+            x0 = vae_latent_to_flux_tokens(x0)
             t = sample_timesteps(
                 batch_size=x0.shape[0],
                 num_steps=int(pipe.scheduler.config.num_train_timesteps),
