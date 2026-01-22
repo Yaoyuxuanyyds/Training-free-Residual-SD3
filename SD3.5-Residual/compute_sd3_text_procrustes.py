@@ -287,7 +287,7 @@ def run(args: argparse.Namespace):
                 pipe.scheduler, z0, timestep_idx, generator=gen_cuda
             )
 
-            z_t = vae_latent_to_flux_tokens(z_t)              # [1,4096,64]
+            # z_t = vae_latent_to_flux_tokens(z_t)              # SD3.5内部处理，只有Flux需要
 
 
             with torch.no_grad():
@@ -398,12 +398,12 @@ def parse_args():
 
     parser.add_argument("--height", type=int, default=1024)
     parser.add_argument("--width", type=int, default=1024)
-    parser.add_argument("--origin_layer", type=int, default=1)
-    parser.add_argument("--target_layers", type=int, nargs="+", default=None)
-    parser.add_argument("--target_layer_start", type=int, default=2)
+    parser.add_argument("--origin-layer", type=int, default=1)
+    parser.add_argument("--target-layers", type=int, nargs="+", default=None)
+    parser.add_argument("--target-layer-start", type=int, default=2)
     parser.add_argument("--max_sequence_length", type=int, default=256)
 
-    parser.add_argument("--timestep_buckets", type=int, default=1)
+    parser.add_argument("--timestep-buckets", type=int, default=1)
     parser.add_argument("--col_center", action="store_true")
     parser.add_argument("--no-padding-mask", action="store_false", dest="use_padding_mask", default=True)
 

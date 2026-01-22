@@ -70,7 +70,7 @@ def load_residual_procrustes(
             dtype=dtype if dtype is not None else rotation_matrices.dtype,
         )
 
-    return rotation_matrices, target_layers, data
+    return rotation_matrices, target_layers, data['meta']
 
 
 def select_residual_rotations(
