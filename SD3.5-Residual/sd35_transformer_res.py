@@ -18,7 +18,7 @@ import torch.nn as nn
 
 from diffusers import SD3Transformer2DModel
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
-from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
+from diffusers.utils import logging
 from diffusers.utils.torch_utils import maybe_allow_in_graph
 
 
@@ -186,19 +186,7 @@ class SD35Transformer2DModel_RES(SD3Transformer2DModel):
                 )
         
         # -------------------------- 第二步：复用父类原生前处理逻辑 --------------------------
-        # 1. LoRA缩放（复用父类逻辑，删除冗余复制）
-        lora_scale = 1.0
-        if joint_attention_kwargs is not None:
-            joint_attention_kwargs = joint_attention_kwargs.copy()
-            lora_scale = joint_attention_kwargs.pop("scale", 1.0)
-        
-        if USE_PEFT_BACKEND:
-            scale_lora_layers(self, lora_scale)
-        else:
-            if joint_attention_kwargs and joint_attention_kwargs.get("scale") is not None:
-                logger.warning("非PEFT后端下，joint_attention_kwargs中的scale参数无效")
-        
-        # 2. 原生前处理（完全复用父类代码，无修改）
+        # 1. 原生前处理（完全复用父类代码，无修改）
         height, width = hidden_states.shape[-2:]
         hidden_states = self.pos_embed(hidden_states)
         temb = self.time_text_embed(timestep, pooled_projections)
@@ -320,10 +308,6 @@ class SD35Transformer2DModel_RES(SD3Transformer2DModel):
         output = hidden_states.reshape(
             shape=(hidden_states.shape[0], self.out_channels, height * patch_size, width * patch_size)
         )
-        
-        # 3. LoRA缩放还原（复用原生逻辑）
-        if USE_PEFT_BACKEND:
-            unscale_lora_layers(self, lora_scale)
         
         # -------------------------- 第五步：兼容原生返回格式 --------------------------
         if not return_dict:

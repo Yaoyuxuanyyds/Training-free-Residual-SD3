@@ -26,96 +26,119 @@ else:
     XLA_AVAILABLE = False
     
 
-def build_timestep_residual_weight_fn(
-    name: Optional[str] = "constant",
-    power: float = 1.0,
-    exp_alpha: float = 1.5,   
-) -> Optional[Callable[[torch.Tensor, int], torch.Tensor]]:
-    if name is None:
-        return None
-
-    name = name.lower()
-
-    def _apply_power(weight: torch.Tensor) -> torch.Tensor:
-        if power != 1.0:
-            return weight ** power
-        return weight
-
-    def constant(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
-        weight = torch.ones_like(timestep, dtype=torch.float32)
-        return _apply_power(weight)
-
-    def linear(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
-        weight = timestep.float() / float(num_train_timesteps)
-        weight = weight.clamp(0.0, 1.0)
-        return _apply_power(weight)
-
-    def cosine(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
-        weight = 0.5 * (1.0 + torch.cos(torch.pi * (1 - timestep.float() / float(num_train_timesteps))))
-        return _apply_power(weight.clamp(0.0, 1.0))
-
-    def exponential(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
-        s = timestep.float() / float(num_train_timesteps)
-        weight = torch.exp(-exp_alpha * s)
-        return _apply_power(weight)
-
-    if name == "constant":
-        return constant
-    if name == "linear":
-        return linear
-    if name == "cosine":
-        return cosine
-    if name in ("exp", "exponential"):
-        return exponential
-
-    raise ValueError(f"Unsupported timestep residual weight fn: {name}")
-
-
 # -------------------------- 第二步：定义带残差参数的Pipeline（复用官方逻辑） --------------------------
 class SD35PipelineWithRES(StableDiffusion3Pipeline):
     """SD3.5 残差参数兼容Pipeline，完全复用官方逻辑，仅透传残差参数"""
 
-    @staticmethod
-    def _resolve_timestep_residual_weight(
-        timestep: torch.Tensor,
-        num_train_timesteps: int,
-        weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]],
-    ) -> Optional[torch.Tensor]:
-        if weight_fn is None:
-            return None
-        try:
-            weight = weight_fn(timestep, num_train_timesteps)
-        except TypeError:
-            weight = weight_fn(timestep)
+    def encode_prompt(
+        self,
+        prompt: Union[str, List[str]] = None,
+        prompt_2: Optional[Union[str, List[str]]] = None,
+        prompt_3: Optional[Union[str, List[str]]] = None,
+        device: Optional[torch.device] = None,
+        num_images_per_prompt: int = 1,
+        do_classifier_free_guidance: bool = True,
+        negative_prompt: Optional[Union[str, List[str]]] = None,
+        negative_prompt_2: Optional[Union[str, List[str]]] = None,
+        negative_prompt_3: Optional[Union[str, List[str]]] = None,
+        prompt_embeds: Optional[torch.FloatTensor] = None,
+        negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+        pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
+        negative_pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
+        max_sequence_length: int = 256,
+        **kwargs,
+    ):
+        prompt_outputs = super().encode_prompt(
+            prompt=prompt,
+            prompt_2=prompt_2,
+            prompt_3=prompt_3,
+            device=device,
+            num_images_per_prompt=num_images_per_prompt,
+            do_classifier_free_guidance=do_classifier_free_guidance,
+            negative_prompt=negative_prompt,
+            negative_prompt_2=negative_prompt_2,
+            negative_prompt_3=negative_prompt_3,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            pooled_prompt_embeds=pooled_prompt_embeds,
+            negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+            max_sequence_length=max_sequence_length,
+            **kwargs,
+        )
 
-        if not torch.is_tensor(weight):
-            weight = torch.tensor(weight, device=timestep.device, dtype=timestep.dtype)
-        else:
-            weight = weight.to(device=timestep.device, dtype=timestep.dtype)
+        (
+            prompt_embeds,
+            negative_prompt_embeds,
+            pooled_prompt_embeds,
+            negative_pooled_prompt_embeds,
+        ) = prompt_outputs
 
-        if weight.numel() > 1:
-            weight = weight.reshape(-1)[0]
-        return weight
+        token_mask = None
+        if prompt is not None and prompt_embeds is not None:
+            clip_tokenizer = getattr(self, "tokenizer", None) or getattr(self, "tokenizer_1", None)
+            clip_tokenizer_2 = getattr(self, "tokenizer_2", None)
+            t5_tokenizer = getattr(self, "tokenizer_3", None)
 
-    @staticmethod
-    def _scale_residual_weights(
-        residual_weights: Optional[Union[List[float], torch.Tensor]],
-        timestep_weight: Optional[torch.Tensor],
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> Optional[torch.Tensor]:
-        if residual_weights is None:
-            return None
-        if timestep_weight is None:
-            if isinstance(residual_weights, torch.Tensor):
-                return residual_weights.to(device=device, dtype=dtype)
-            return torch.tensor(residual_weights, device=device, dtype=dtype)
+            prompt_list = prompt if isinstance(prompt, (list, tuple)) else [prompt]
+            prompt_2_list = prompt_2 if prompt_2 is not None else prompt_list
+            if not isinstance(prompt_2_list, (list, tuple)):
+                prompt_2_list = [prompt_2_list]
+            prompt_3_list = prompt_3 if prompt_3 is not None else prompt_list
+            if not isinstance(prompt_3_list, (list, tuple)):
+                prompt_3_list = [prompt_3_list]
 
-        if isinstance(residual_weights, torch.Tensor):
-            weights = residual_weights.to(device=device, dtype=dtype)
-        else:
-            weights = torch.tensor(residual_weights, device=device, dtype=dtype)
-        return weights * timestep_weight
+            clip_mask = None
+            if clip_tokenizer is not None:
+                clip_tokens = clip_tokenizer(
+                    prompt_list,
+                    padding="max_length",
+                    max_length=clip_tokenizer.model_max_length,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                clip_mask = clip_tokens.attention_mask.bool()
+            if clip_tokenizer_2 is not None:
+                clip_tokens_2 = clip_tokenizer_2(
+                    prompt_2_list,
+                    padding="max_length",
+                    max_length=clip_tokenizer_2.model_max_length,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                clip_mask_2 = clip_tokens_2.attention_mask.bool()
+                clip_mask = clip_mask_2 if clip_mask is None else torch.logical_or(clip_mask, clip_mask_2)
+
+            t5_mask = None
+            if t5_tokenizer is not None:
+                t5_tokens = t5_tokenizer(
+                    prompt_3_list,
+                    padding="max_length",
+                    max_length=max_sequence_length,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                t5_mask = t5_tokens.attention_mask.bool()
+
+            if clip_mask is not None and t5_mask is not None:
+                token_mask = torch.cat([clip_mask, t5_mask], dim=1)
+            elif clip_mask is not None:
+                token_mask = clip_mask
+            elif t5_mask is not None:
+                token_mask = t5_mask
+
+            if token_mask is not None:
+                device = device or self._execution_device
+                token_mask = token_mask.to(device=device)
+                if num_images_per_prompt > 1:
+                    token_mask = token_mask.repeat_interleave(num_images_per_prompt, dim=0)
+
+        return (
+            prompt_embeds,
+            negative_prompt_embeds,
+            pooled_prompt_embeds,
+            negative_pooled_prompt_embeds,
+            token_mask,
+        )
 
     @torch.no_grad()
     def __call__(
@@ -160,7 +183,6 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
         residual_use_layernorm: bool = True,
         residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
         residual_rotation_meta: Optional[dict] = None,
-        residual_timestep_weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]] = None,
     ) -> Union[tuple, StableDiffusion3PipelineOutput]:
         # 复用官方__call__的前置逻辑（直接调用父类的核心逻辑）
         # 1. 基础初始化（和官方完全一致）
@@ -205,13 +227,7 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
         device = self._execution_device
 
         # 4. 文本编码（复用官方方法）
-        lora_scale = self.joint_attention_kwargs.get("scale", None) if self.joint_attention_kwargs is not None else None
-        (
-            prompt_embeds,
-            negative_prompt_embeds,
-            pooled_prompt_embeds,
-            negative_pooled_prompt_embeds,
-        ) = self.encode_prompt(
+        prompt_outputs = self.encode_prompt(
             prompt=prompt,
             prompt_2=prompt_2,
             prompt_3=prompt_3,
@@ -227,8 +243,14 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
             clip_skip=self.clip_skip,
             num_images_per_prompt=num_images_per_prompt,
             max_sequence_length=max_sequence_length,
-            lora_scale=lora_scale,
         )
+        (
+            prompt_embeds,
+            negative_prompt_embeds,
+            pooled_prompt_embeds,
+            negative_pooled_prompt_embeds,
+            _,
+        ) = prompt_outputs
 
         if self.do_classifier_free_guidance:
             if skip_guidance_layers is not None:
@@ -290,9 +312,6 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
                 self._joint_attention_kwargs.update(ip_adapter_image_embeds=ip_adapter_image_embeds)
 
         # 8. 去噪循环（核心修改：透传残差参数）
-        weight_fn = None
-        if residual_weights is not None:
-            weight_fn = residual_timestep_weight_fn or build_timestep_residual_weight_fn()
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -301,17 +320,6 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
                 # 扩展latents用于CFG
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                 timestep = t.expand(latent_model_input.shape[0])
-                timestep_weight = self._resolve_timestep_residual_weight(
-                    timestep,
-                    self.scheduler.config.num_train_timesteps,
-                    weight_fn,
-                )
-                effective_residual_weights = self._scale_residual_weights(
-                    residual_weights,
-                    timestep_weight,
-                    device=latent_model_input.device,
-                    dtype=latent_model_input.dtype,
-                )
                 selected_rotations = resolve_rotation_bucket(
                     residual_rotation_matrices,
                     residual_rotation_meta,
@@ -328,7 +336,7 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
                     return_dict=False,
                     residual_target_layers=residual_target_layers,
                     residual_origin_layer=residual_origin_layer,
-                    residual_weights=effective_residual_weights,
+                    residual_weights=residual_weights,
                     residual_use_layernorm=residual_use_layernorm,
                     residual_rotation_matrices=selected_rotations,
                 )
@@ -362,7 +370,7 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
                             skip_layers=skip_guidance_layers,
                             residual_target_layers=residual_target_layers,
                             residual_origin_layer=residual_origin_layer,
-                            residual_weights=effective_residual_weights,
+                            residual_weights=residual_weights,
                             residual_use_layernorm=residual_use_layernorm,
                             residual_rotation_matrices=selected_rotations,
                         )
