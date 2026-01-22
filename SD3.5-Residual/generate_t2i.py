@@ -4,6 +4,7 @@ import glob
 import re
 import torch
 from tqdm import tqdm
+from torchvision.utils import save_image
 
 from generate_image_res import SD35PipelineWithRES
 from sd35_transformer_res import SD35Transformer2DModel_RES
@@ -41,9 +42,9 @@ class SD35ImageGenerator:
         self,
         prompt,
         seed,
-        img_size,
-        steps,
-        scale,
+        img_size=1024,
+        steps=28,
+        scale=7.0,
         residual_target_layers=None,
         residual_origin_layer=None,
         residual_weights=None,
@@ -105,7 +106,7 @@ def parse_args():
     parser.add_argument(
         "--outdir_base",
         type=str,
-        default="/inspire/.../examples",
+        required=True,
     )
 
     parser.add_argument("--n_samples", type=int, default=10)
@@ -123,7 +124,7 @@ def parse_args():
         metavar="SEED",
     )
 
-    parser.add_argument("--output_prefix", type=str, default="sd35_multigpu")
+    parser.add_argument("--output_prefix", type=str, default="sd3.5_residual")
 
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
@@ -164,50 +165,45 @@ def main(opt):
         residual_rotation_meta=residual_rotation_meta,
     )
 
-    prompt_files = sorted(glob.glob(os.path.join(opt.dataset_dir, "*.txt")))
-    total_prompts = len(prompt_files)
 
+    # 扫描 *val.txt（保留原逻辑，读取T2I-CompBench格式prompt）
+    txt_files = sorted(glob.glob(os.path.join(opt.dataset_dir, "*val.txt")))
+    total_files = len(txt_files)
+
+    # 多卡分片（保留原逻辑）
     if opt.world_size > 1:
-        prompt_files = [f for i, f in enumerate(prompt_files) if i % opt.world_size == opt.rank]
+        txt_files = [f for i, f in enumerate(txt_files) if i % opt.world_size == opt.rank]
 
-    for prompt_idx, prompt_file in enumerate(tqdm(prompt_files, desc="Prompts")):
-        txt_name = os.path.splitext(os.path.basename(prompt_file))[0]
+    print(f"[Rank {opt.rank}] total txt={total_files}, this rank={len(txt_files)}")
+    seeds_to_use = opt.seeds[:opt.n_samples]
+
+    # 遍历 txt 文件（保留原逻辑）
+    for txt_path in txt_files:
+        txt_name = os.path.splitext(os.path.basename(txt_path))[0]
+        # 保存路径保留原格式，仅修改前缀为Flux残差标识
         outdir = os.path.join(opt.outdir_base, f"samples_{opt.output_prefix}_{txt_name}")
         os.makedirs(outdir, exist_ok=True)
 
-        with open(prompt_file, "r", encoding="utf-8") as f:
-            prompts = [line.strip() for line in f if line.strip()]
+        # 加载 prompts（保留原逻辑）
+        with open(txt_path, "r") as f:
+            prompts = [x.strip() for x in f if x.strip()]
 
-        for prompt in prompts:
-            cleaned_prompt = clean_prompt_for_filename(prompt)
+        # 遍历每行 prompt（保留原逻辑，断点续跑+批量生成）
+        for prompt in tqdm(prompts, desc=f"[Rank {opt.rank}] {txt_name}"):
+            prompt_clean = clean_prompt_for_filename(prompt)
 
-            for i in range(opt.n_samples):
-                seed = opt.seeds[i % len(opt.seeds)]
-                output_name = f"{cleaned_prompt}_{i:06d}.png"
-                output_path = os.path.join(outdir, output_name)
+            for si, seed in enumerate(seeds_to_use):
+                fname = f"{prompt_clean}_{si:06d}.png"
+                fpath = os.path.join(outdir, fname)
 
-                if os.path.exists(output_path):
+                if os.path.exists(fpath):
                     continue
 
-                image = generator.generate(
-                    prompt=prompt,
-                    seed=seed,
-                    img_size=opt.H,
-                    steps=opt.steps,
-                    scale=opt.scale,
-                    residual_target_layers=opt.residual_target_layers,
-                    residual_origin_layer=opt.residual_origin_layer,
-                    residual_weights=opt.residual_weights,
-                    residual_rotation_matrices=residual_rotation_matrices,
-                )
+                # 调用Flux残差生成器（替换原Qwen生成调用）
+                img = generator.generate(prompt=prompt, seed=seed)
+                save_image(img, fpath, normalize=True)
 
-                if image.dim() == 3 and image.shape[0] != 3 and image.shape[-1] == 3:
-                    image = image.permute(2, 0, 1)
-
-                from torchvision.utils import save_image
-
-                save_image(image, output_path, normalize=True)
-
+    print(f"[Rank {opt.rank}] All Done.")
 
 if __name__ == "__main__":
     opt = parse_args()
