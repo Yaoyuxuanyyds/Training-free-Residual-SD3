@@ -8,7 +8,6 @@ from tqdm import tqdm
 from generate_image_res import SD35PipelineWithRES
 from sd35_transformer_res import SD35Transformer2DModel_RES
 from util import load_residual_procrustes, select_residual_rotations, set_seed, load_residual_weights
-from lora_utils import inject_lora, load_lora_state_dict
 
 
 torch.set_grad_enabled(False)
@@ -131,13 +130,6 @@ def parse_args():
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
-    parser.add_argument('--lora_ckpt', type=str, default=None, help='Path to LoRA-only checkpoint (.pth)')
-    parser.add_argument('--lora_rank', type=int, default=8)
-    parser.add_argument('--lora_alpha', type=int, default=16)
-    parser.add_argument('--lora_target', type=str, default='all_linear',
-                        help="all_linear 或模块名片段，如: to_q,to_k,to_v,to_out")
-    parser.add_argument('--lora_dropout', type=float, default=0.0)
-
     parser.add_argument("--world_size", type=int, default=1)
     parser.add_argument("--rank", type=int, default=0)
 
@@ -171,22 +163,6 @@ def main(opt):
         residual_rotation_matrices=residual_rotation_matrices,
         residual_rotation_meta=residual_rotation_meta,
     )
-
-    if opt.lora_ckpt is not None:
-        print(f"[LoRA] injecting & loading LoRA from: {opt.lora_ckpt}")
-        target = "all_linear" if opt.lora_target == "all_linear" else tuple(opt.lora_target.split(","))
-        inject_lora(
-            generator.pipe.transformer,
-            rank=opt.lora_rank,
-            alpha=opt.lora_alpha,
-            target=target,
-            dropout=opt.lora_dropout,
-            is_train=False,
-        )
-        lora_sd = torch.load(opt.lora_ckpt, map_location="cpu")
-        load_lora_state_dict(generator.pipe.transformer, lora_sd, strict=True)
-        generator.pipe.transformer.eval()
-        print("[LoRA] loaded and ready.")
 
     prompt_files = sorted(glob.glob(os.path.join(opt.dataset_dir, "*.txt")))
     total_prompts = len(prompt_files)

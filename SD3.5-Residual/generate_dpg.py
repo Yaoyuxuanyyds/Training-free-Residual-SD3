@@ -11,7 +11,6 @@ from PIL import Image
 from generate_image_res import SD35PipelineWithRES
 from sd35_transformer_res import SD35Transformer2DModel_RES
 from util import load_residual_procrustes, select_residual_rotations, load_residual_weights
-from lora_utils import inject_lora, load_lora_state_dict
 
 INTERPOLATIONS = {
     'bilinear': InterpolationMode.BILINEAR,
@@ -77,13 +76,6 @@ if __name__ == "__main__":
 
     parser.add_argument("--prompt_dir", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/benches/ELLA/dpg_bench/prompts")
 
-    parser.add_argument('--lora_ckpt', type=str, default=None, help='Path to LoRA-only checkpoint (.pth)')
-    parser.add_argument('--lora_rank', type=int, default=8)
-    parser.add_argument('--lora_alpha', type=int, default=16)
-    parser.add_argument('--lora_target', type=str, default='all_linear',
-                        help="all_linear 或模块名片段，如: to_q,to_k,to_v,to_out")
-    parser.add_argument('--lora_dropout', type=float, default=0.0)
-
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
@@ -107,22 +99,6 @@ if __name__ == "__main__":
         trust_remote_code=True,
     ).to(device)
     pipe.transformer = SD35Transformer2DModel_RES(pipe.transformer)
-
-    if args.lora_ckpt is not None:
-        print(f"[LoRA] injecting & loading LoRA from: {args.lora_ckpt}")
-        target = "all_linear" if args.lora_target == "all_linear" else tuple(args.lora_target.split(","))
-        inject_lora(
-            pipe.transformer,
-            rank=args.lora_rank,
-            alpha=args.lora_alpha,
-            target=target,
-            dropout=args.lora_dropout,
-            is_train=False,
-        )
-        lora_sd = torch.load(args.lora_ckpt, map_location="cpu")
-        load_lora_state_dict(pipe.transformer, lora_sd, strict=True)
-        pipe.transformer.eval()
-        print("[LoRA] loaded and ready.")
 
     residual_rotation_matrices = None
     residual_rotation_meta = None

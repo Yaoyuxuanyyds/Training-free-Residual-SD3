@@ -117,7 +117,6 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
         device = self._execution_device
 
         # 4. 文本编码（复用官方方法）
-        lora_scale = self.joint_attention_kwargs.get("scale", None) if self.joint_attention_kwargs is not None else None
         (
             prompt_embeds,
             negative_prompt_embeds,
@@ -139,7 +138,6 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
             clip_skip=self.clip_skip,
             num_images_per_prompt=num_images_per_prompt,
             max_sequence_length=max_sequence_length,
-            lora_scale=lora_scale,
         )
 
         if self.do_classifier_free_guidance:
