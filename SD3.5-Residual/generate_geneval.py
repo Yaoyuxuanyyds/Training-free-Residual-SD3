@@ -105,7 +105,7 @@ def parse_args():
     parser.add_argument("--metadata_file", type=str, required=True)
     parser.add_argument("--outdir", type=str, required=True)
     parser.add_argument("--n_samples", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--batch_size", type=int, default=16)
 
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)

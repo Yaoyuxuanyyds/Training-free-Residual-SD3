@@ -15,7 +15,7 @@ from diffusers.image_processor import PipelineImageInput
 
 # 导入同一文件夹下的自定义Transformer（关键：解决SD35Transformer2DModel_RES未导入）
 from sd35_transformer_res import SD35Transformer2DModel_RES
-from sampler import build_timestep_residual_weight_fn
+
 from util import resolve_rotation_bucket
 
 # XLA相关定义（保持和官方源码一致）
@@ -24,6 +24,52 @@ if is_torch_xla_available():
     XLA_AVAILABLE = True
 else:
     XLA_AVAILABLE = False
+    
+
+def build_timestep_residual_weight_fn(
+    name: Optional[str] = "constant",
+    power: float = 1.0,
+    exp_alpha: float = 1.5,   
+) -> Optional[Callable[[torch.Tensor, int], torch.Tensor]]:
+    if name is None:
+        return None
+
+    name = name.lower()
+
+    def _apply_power(weight: torch.Tensor) -> torch.Tensor:
+        if power != 1.0:
+            return weight ** power
+        return weight
+
+    def constant(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
+        weight = torch.ones_like(timestep, dtype=torch.float32)
+        return _apply_power(weight)
+
+    def linear(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
+        weight = timestep.float() / float(num_train_timesteps)
+        weight = weight.clamp(0.0, 1.0)
+        return _apply_power(weight)
+
+    def cosine(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
+        weight = 0.5 * (1.0 + torch.cos(torch.pi * (1 - timestep.float() / float(num_train_timesteps))))
+        return _apply_power(weight.clamp(0.0, 1.0))
+
+    def exponential(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
+        s = timestep.float() / float(num_train_timesteps)
+        weight = torch.exp(-exp_alpha * s)
+        return _apply_power(weight)
+
+    if name == "constant":
+        return constant
+    if name == "linear":
+        return linear
+    if name == "cosine":
+        return cosine
+    if name in ("exp", "exponential"):
+        return exponential
+
+    raise ValueError(f"Unsupported timestep residual weight fn: {name}")
+
 
 # -------------------------- 第二步：定义带残差参数的Pipeline（复用官方逻辑） --------------------------
 class SD35PipelineWithRES(StableDiffusion3Pipeline):

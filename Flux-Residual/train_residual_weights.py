@@ -8,6 +8,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import tqdm
+import json
 
 from dataset.datasets import CachedFeatureDataset_Packed, collate_fn_packed, get_target_dataset
 from generate_image_res import FluxPipelineWithRES
@@ -19,6 +20,28 @@ from util import (
     set_seed,
     resolve_rotation_bucket,
 )
+
+
+def save_residual_weights_json(
+    path: str,
+    residual_weights: torch.Tensor,
+    residual_target_layers: List[int],
+    residual_origin_layer: int,
+    step: Optional[int] = None,
+):
+    data = {
+        "residual_origin_layer": residual_origin_layer,
+        "residual_target_layers": residual_target_layers,
+        "residual_weights": residual_weights.detach().cpu().tolist(),
+    }
+    if step is not None:
+        data["step"] = step
+
+    json_path = path.replace(".pth", ".json")
+    with open(json_path, "w") as f:
+        json.dump(data, f, indent=2)
+
+    return json_path
 
 
 def sample_timesteps(batch_size, num_steps, device, mode="uniform"):
@@ -388,6 +411,7 @@ def train(args):
 
             if is_main_process and args.save_every > 0 and global_step % args.save_every == 0:
                 save_path = osp.join(args.output_dir, f"residual_weights_step{global_step}.pth")
+
                 torch.save(
                     {
                         "residual_weights": residual_weights.detach().cpu(),
@@ -396,7 +420,18 @@ def train(args):
                     },
                     save_path,
                 )
+
+                json_path = save_residual_weights_json(
+                    save_path,
+                    residual_weights,
+                    residual_target_layers,
+                    residual_origin_layer,
+                    step=global_step,
+                )
+
                 print(f"[SAVE] {save_path}")
+                print(f"[SAVE] {json_path}")
+
 
             global_step += 1
             pbar.update(1)
@@ -405,16 +440,29 @@ def train(args):
 
     if is_main_process:
         final_path = osp.join(args.output_dir, "residual_weights_final.pth")
-        residual_weights_raw = residual_module.module.residual_weights_raw if distributed else residual_module.residual_weights_raw
+
+        final_weights = F.softplus(residual_weights_raw)
+
         torch.save(
             {
-                "residual_weights": F.softplus(residual_weights_raw).detach().cpu(),
+                "residual_weights": final_weights.detach().cpu(),
                 "residual_target_layers": residual_target_layers,
                 "residual_origin_layer": residual_origin_layer,
             },
             final_path,
         )
+
+        json_path = save_residual_weights_json(
+            final_path,
+            final_weights,
+            residual_target_layers,
+            residual_origin_layer,
+            step=None,
+        )
+
         print(f"[DONE] Saved final weights to {final_path}")
+        print(f"[DONE] Saved final weights json to {json_path}")
+
     if distributed and dist.is_initialized():
         dist.barrier()
         dist.destroy_process_group()

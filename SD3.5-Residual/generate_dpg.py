@@ -68,7 +68,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--NFE", type=int, default=28)
-    parser.add_argument("--cfg_scale", type=float, default=1.0)
+    parser.add_argument("--cfg_scale", type=float, default=7.0)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--img_size", type=int, default=1024)
 
