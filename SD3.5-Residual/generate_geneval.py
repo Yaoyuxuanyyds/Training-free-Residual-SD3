@@ -7,7 +7,6 @@ from torchvision.utils import save_image
 
 from generate_image_res import SD35PipelineWithRES
 from sd35_transformer_res import SD35Transformer2DModel_RES
-from sampler import build_timestep_residual_weight_fn
 from util import (
     load_residual_procrustes,
     select_residual_rotations,
@@ -31,7 +30,6 @@ class SD35ImageGenerator:
         residual_weights=None,
         residual_rotation_matrices=None,
         residual_rotation_meta=None,
-        residual_timestep_weight_fn=None,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         model_path = model_path or DEFAULT_SD35_MODEL
@@ -47,7 +45,6 @@ class SD35ImageGenerator:
         self.residual_weights = residual_weights
         self.residual_rotation_matrices = residual_rotation_matrices
         self.residual_rotation_meta = residual_rotation_meta
-        self.residual_timestep_weight_fn = residual_timestep_weight_fn
 
     def generate_image(
         self,
@@ -61,18 +58,12 @@ class SD35ImageGenerator:
         residual_weights=None,
         residual_rotation_matrices=None,
         residual_rotation_meta=None,
-        residual_timestep_weight_fn=None,
     ):
         rt = residual_target_layers if residual_target_layers is not None else self.residual_target_layers
         ro = residual_origin_layer if residual_origin_layer is not None else self.residual_origin_layer
         rw = residual_weights if residual_weights is not None else self.residual_weights
         rr = residual_rotation_matrices if residual_rotation_matrices is not None else self.residual_rotation_matrices
         rr_meta = residual_rotation_meta if residual_rotation_meta is not None else self.residual_rotation_meta
-        rtw = (
-            residual_timestep_weight_fn
-            if residual_timestep_weight_fn is not None
-            else self.residual_timestep_weight_fn
-        )
 
         set_seed(seed)
         generator = torch.Generator(device=self.device).manual_seed(seed)
@@ -91,7 +82,6 @@ class SD35ImageGenerator:
                 residual_weights=rw,
                 residual_rotation_matrices=rr,
                 residual_rotation_meta=rr_meta,
-                residual_timestep_weight_fn=rtw,
             )
         image = result.images[0] if hasattr(result, "images") else result[0]
         if image.dim() == 4:
@@ -113,25 +103,6 @@ def parse_args():
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
-    parser.add_argument(
-        "--timestep_residual_weight_fn",
-        type=str,
-        default="constant",
-        help="Mapping from timestep (0-1000) to residual weight multiplier.",
-    )
-    parser.add_argument(
-        "--timestep_residual_weight_power",
-        type=float,
-        default=1.0,
-        help="Optional power for timestep residual weight mapping.",
-    )
-    parser.add_argument(
-        "--timestep_residual_weight_exp_alpha",
-        type=float,
-        default=1.5,
-        help="Exponent alpha for exponential timestep residual weight mapping.",
-    )
-
     parser.add_argument('--lora_ckpt', type=str, default=None, help='Path to LoRA-only checkpoint (.pth)')
     parser.add_argument('--lora_rank', type=int, default=8)
     parser.add_argument('--lora_alpha', type=int, default=16)
@@ -184,11 +155,6 @@ def main(args):
         residual_weights=args.residual_weights,
         residual_rotation_matrices=residual_rotation_matrices,
         residual_rotation_meta=residual_rotation_meta,
-        residual_timestep_weight_fn=build_timestep_residual_weight_fn(
-            args.timestep_residual_weight_fn,
-            power=args.timestep_residual_weight_power,
-            exp_alpha=args.timestep_residual_weight_exp_alpha,
-        ),
     )
 
     if args.lora_ckpt is not None:
@@ -245,7 +211,6 @@ def main(args):
                         residual_origin_layer=args.residual_origin_layer,
                         residual_weights=args.residual_weights,
                         residual_rotation_matrices=residual_rotation_matrices,
-                        residual_timestep_weight_fn=generator.residual_timestep_weight_fn,
                     )
 
                     if image.dim() == 3 and image.shape[0] != 3 and image.shape[-1] == 3:

@@ -10,7 +10,6 @@ from PIL import Image
 
 from generate_image_res import SD35PipelineWithRES
 from sd35_transformer_res import SD35Transformer2DModel_RES
-from sampler import build_timestep_residual_weight_fn
 from util import load_residual_procrustes, select_residual_rotations, load_residual_weights
 from lora_utils import inject_lora, load_lora_state_dict
 
@@ -90,24 +89,6 @@ if __name__ == "__main__":
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
-    parser.add_argument(
-        "--timestep_residual_weight_fn",
-        type=str,
-        default="constant",
-        help="Mapping from timestep (0-1000) to residual weight multiplier.",
-    )
-    parser.add_argument(
-        "--timestep_residual_weight_power",
-        type=float,
-        default=1.0,
-        help="Optional power for timestep residual weight mapping.",
-    )
-    parser.add_argument(
-        "--timestep_residual_weight_exp_alpha",
-        type=float,
-        default=1.5,
-        help="Exponent alpha for exponential timestep residual weight mapping.",
-    )
     parser.add_argument("--world_size", type=int, default=1)
     parser.add_argument("--rank", type=int, default=0)
 
@@ -198,11 +179,6 @@ if __name__ == "__main__":
                 residual_weights=args.residual_weights,
                 residual_rotation_matrices=residual_rotation_matrices,
                 residual_rotation_meta=residual_rotation_meta,
-                residual_timestep_weight_fn=build_timestep_residual_weight_fn(
-                    args.timestep_residual_weight_fn,
-                    power=args.timestep_residual_weight_power,
-                    exp_alpha=args.timestep_residual_weight_exp_alpha,
-                ),
             )
 
         imgs = result.images
