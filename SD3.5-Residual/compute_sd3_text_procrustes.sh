@@ -12,6 +12,6 @@ CUDA_VISIBLE_DEVICES=0 python compute_sd3_text_procrustes.py \
   --num-samples 5000 \
   --origin-layer 2 \
   --target-layer-start 3 \
-  --output procrustes_rotations_coco5k_ln_t5_o2.pt \
-  --timestep-buckets 5 \
+  --output procrustes_rotations_coco5k_ln_t4_o2.pt \
+  --timestep-buckets 4 \
   --col_center
