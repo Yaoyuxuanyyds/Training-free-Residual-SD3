@@ -232,9 +232,19 @@ def run(args: argparse.Namespace):
     num_buckets = max(1, int(args.timestep_buckets))
     bucket_edges = _build_bucket_edges(num_train_timesteps, num_buckets)
 
-    origin_chunks: List[List[torch.Tensor]] = [[] for _ in range(num_buckets)]
-    target_chunks: Dict[int, List[List[torch.Tensor]]] = {
-        layer: [[] for _ in range(num_buckets)] for layer in target_layers
+    feature_dim: Optional[int] = None
+    origin_counts = [0 for _ in range(num_buckets)]
+    origin_sums: List[Optional[torch.Tensor]] = [None for _ in range(num_buckets)]
+    origin_sumsq: List[Optional[torch.Tensor]] = [None for _ in range(num_buckets)]
+    layer_counts: Dict[int, List[int]] = {layer: [0 for _ in range(num_buckets)] for layer in target_layers}
+    layer_sums: Dict[int, List[Optional[torch.Tensor]]] = {
+        layer: [None for _ in range(num_buckets)] for layer in target_layers
+    }
+    layer_sumsq: Dict[int, List[Optional[torch.Tensor]]] = {
+        layer: [None for _ in range(num_buckets)] for layer in target_layers
+    }
+    layer_cross: Dict[int, List[Optional[torch.Tensor]]] = {
+        layer: [None for _ in range(num_buckets)] for layer in target_layers
     }
 
     pair_iter: Iterable = _iterate_pairs(args, dataset)
@@ -305,53 +315,88 @@ def run(args: argparse.Namespace):
             origin_state = txt_input_states[args.origin_layer][0].float().cpu()
             if token_mask is not None:
                 origin_state = origin_state[token_mask.cpu()]
-            origin_chunks[bucket_idx].append(origin_state)
+            if origin_state.numel() == 0:
+                continue
+
+            mu = origin_state.mean(dim=-1, keepdim=True)
+            st = origin_state.std(dim=-1, keepdim=True) + 1e-6
+            origin_ln = (origin_state - mu) / st
+            if feature_dim is None:
+                feature_dim = origin_ln.shape[1]
+            if origin_sums[bucket_idx] is None:
+                origin_sums[bucket_idx] = torch.zeros(feature_dim, dtype=torch.float32)
+                origin_sumsq[bucket_idx] = torch.tensor(0.0, dtype=torch.float32)
+                for layer in target_layers:
+                    layer_sums[layer][bucket_idx] = torch.zeros(feature_dim, dtype=torch.float32)
+                    layer_sumsq[layer][bucket_idx] = torch.tensor(0.0, dtype=torch.float32)
+                    layer_cross[layer][bucket_idx] = torch.zeros(
+                        (feature_dim, feature_dim), dtype=torch.float32
+                    )
+
+            origin_counts[bucket_idx] += origin_ln.shape[0]
+            origin_sums[bucket_idx] += origin_ln.sum(dim=0)
+            origin_sumsq[bucket_idx] += origin_ln.pow(2).sum()
 
             for layer in target_layers:
                 target_state = txt_input_states[layer][0].float().cpu()
                 if token_mask is not None:
                     target_state = target_state[token_mask.cpu()]
-                target_chunks[layer][bucket_idx].append(target_state)
+                if target_state.numel() == 0:
+                    continue
+                mu = target_state.mean(dim=-1, keepdim=True)
+                st = target_state.std(dim=-1, keepdim=True) + 1e-6
+                target_ln = (target_state - mu) / st
 
-    def apply_simulated_ln(chunks_list: List[torch.Tensor]) -> torch.Tensor:
-        processed = []
-        for x in chunks_list:
-            if x.shape[0] == 0:
-                continue
-            mu = x.mean(dim=-1, keepdim=True)
-            st = x.std(dim=-1, keepdim=True) + 1e-6
-            processed.append((x - mu) / st)
-        return torch.cat(processed, dim=0)
+                layer_counts[layer][bucket_idx] += target_ln.shape[0]
+                layer_sums[layer][bucket_idx] += target_ln.sum(dim=0)
+                layer_sumsq[layer][bucket_idx] += target_ln.pow(2).sum()
+                layer_cross[layer][bucket_idx] += origin_ln.t().matmul(target_ln)
 
-    print("[PROCESS] Applying Row-wise LN and optional Column-wise Centering...")
+            del outputs, txt_input_states, z_t, t_tensor
+
+    print("[PROCESS] Computing Procrustes rotations from streaming statistics...")
 
     rotations_by_bucket: List[torch.Tensor] = []
     num_valid_tokens: List[int] = []
 
     for bucket_idx in range(num_buckets):
-        X_ln = apply_simulated_ln(origin_chunks[bucket_idx])
-        X_final = (
-            X_ln - X_ln.mean(dim=0, keepdim=True)
-            if args.col_center
-            else X_ln
-        )
-        num_valid_tokens.append(X_final.shape[0])
+        if origin_counts[bucket_idx] == 0:
+            raise ValueError(f"No valid tokens collected for bucket {bucket_idx}.")
+        n_tokens = origin_counts[bucket_idx]
+        sum_x = origin_sums[bucket_idx]
+        sum_x2 = origin_sumsq[bucket_idx]
+        if sum_x is None or sum_x2 is None:
+            raise ValueError(f"Origin statistics missing for bucket {bucket_idx}.")
+        num_valid_tokens.append(n_tokens)
+        if args.col_center:
+            x_norm = sum_x2 - (sum_x.pow(2).sum() / n_tokens)
+        else:
+            x_norm = sum_x2
 
         rotations: List[torch.Tensor] = []
         for layer in target_layers:
-            Y_ln = apply_simulated_ln(target_chunks[layer][bucket_idx])
-            Y_final = (
-                Y_ln - Y_ln.mean(dim=0, keepdim=True)
-                if args.col_center
-                else Y_ln
-            )
+            sum_y = layer_sums[layer][bucket_idx]
+            sum_y2 = layer_sumsq[layer][bucket_idx]
+            sum_xy = layer_cross[layer][bucket_idx]
+            n_layer = layer_counts[layer][bucket_idx]
+            if sum_y is None or sum_y2 is None or sum_xy is None or n_layer == 0:
+                raise ValueError(
+                    f"No valid tokens collected for bucket {bucket_idx}, layer {layer}."
+                )
+            if args.col_center:
+                C = sum_xy - torch.outer(sum_x, sum_y) / n_layer
+                y_norm = sum_y2 - (sum_y.pow(2).sum() / n_layer)
+            else:
+                C = sum_xy
+                y_norm = sum_y2
 
-            C = X_final.t().matmul(Y_final).to(torch.float32)
             U, S, Vh = torch.linalg.svd(C, full_matrices=False)
             R = U.matmul(Vh)
             rotations.append(R)
 
-            res = torch.norm(X_final.matmul(R) - Y_final, p="fro")
+            trace_val = torch.sum(R * C)
+            fro_sq = x_norm + y_norm - 2.0 * trace_val
+            res = torch.sqrt(torch.clamp(fro_sq, min=0.0))
             print(
                 f"[Bucket {bucket_idx}] Layer {layer} alignment residual (Frobenius): {res:.4f}"
             )
