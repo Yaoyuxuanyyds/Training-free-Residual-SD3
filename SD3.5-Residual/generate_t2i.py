@@ -171,39 +171,42 @@ def main(opt):
         prompt_files = [f for i, f in enumerate(prompt_files) if i % opt.world_size == opt.rank]
 
     for prompt_idx, prompt_file in enumerate(tqdm(prompt_files, desc="Prompts")):
+        txt_name = os.path.splitext(os.path.basename(prompt_file))[0]
+        outdir = os.path.join(opt.outdir_base, f"samples_{opt.output_prefix}_{txt_name}")
+        os.makedirs(outdir, exist_ok=True)
+
         with open(prompt_file, "r", encoding="utf-8") as f:
-            prompt = f.read().strip()
+            prompts = [line.strip() for line in f if line.strip()]
 
-        cleaned_prompt = clean_prompt_for_filename(prompt)
-        prompt_dir = os.path.join(opt.outdir_base, cleaned_prompt)
-        os.makedirs(prompt_dir, exist_ok=True)
+        for prompt in prompts:
+            cleaned_prompt = clean_prompt_for_filename(prompt)
 
-        for i in range(opt.n_samples):
-            seed = opt.seeds[i % len(opt.seeds)]
-            output_name = f"{opt.output_prefix}_s{seed:06d}_i{i:02d}.png"
-            output_path = os.path.join(prompt_dir, output_name)
+            for i in range(opt.n_samples):
+                seed = opt.seeds[i % len(opt.seeds)]
+                output_name = f"{cleaned_prompt}_{i:06d}.png"
+                output_path = os.path.join(outdir, output_name)
 
-            if os.path.exists(output_path):
-                continue
+                if os.path.exists(output_path):
+                    continue
 
-            image = generator.generate(
-                prompt=prompt,
-                seed=seed,
-                img_size=opt.H,
-                steps=opt.steps,
-                scale=opt.scale,
-                residual_target_layers=opt.residual_target_layers,
-                residual_origin_layer=opt.residual_origin_layer,
-                residual_weights=opt.residual_weights,
-                residual_rotation_matrices=residual_rotation_matrices,
-            )
+                image = generator.generate(
+                    prompt=prompt,
+                    seed=seed,
+                    img_size=opt.H,
+                    steps=opt.steps,
+                    scale=opt.scale,
+                    residual_target_layers=opt.residual_target_layers,
+                    residual_origin_layer=opt.residual_origin_layer,
+                    residual_weights=opt.residual_weights,
+                    residual_rotation_matrices=residual_rotation_matrices,
+                )
 
-            if image.dim() == 3 and image.shape[0] != 3 and image.shape[-1] == 3:
-                image = image.permute(2, 0, 1)
+                if image.dim() == 3 and image.shape[0] != 3 and image.shape[-1] == 3:
+                    image = image.permute(2, 0, 1)
 
-            from torchvision.utils import save_image
+                from torchvision.utils import save_image
 
-            save_image(image, output_path, normalize=True)
+                save_image(image, output_path, normalize=True)
 
 
 if __name__ == "__main__":
