@@ -10,9 +10,7 @@ from PIL import Image
 
 from generate_image_res import SD35PipelineWithRES
 from sd35_transformer_res import SD35Transformer2DModel_RES
-from sampler import build_timestep_residual_weight_fn
 from util import load_residual_procrustes, select_residual_rotations, load_residual_weights
-from lora_utils import inject_lora, load_lora_state_dict
 
 INTERPOLATIONS = {
     'bilinear': InterpolationMode.BILINEAR,
@@ -78,36 +76,11 @@ if __name__ == "__main__":
 
     parser.add_argument("--prompt_dir", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/benches/ELLA/dpg_bench/prompts")
 
-    parser.add_argument('--lora_ckpt', type=str, default=None, help='Path to LoRA-only checkpoint (.pth)')
-    parser.add_argument('--lora_rank', type=int, default=8)
-    parser.add_argument('--lora_alpha', type=int, default=16)
-    parser.add_argument('--lora_target', type=str, default='all_linear',
-                        help="all_linear 或模块名片段，如: to_q,to_k,to_v,to_out")
-    parser.add_argument('--lora_dropout', type=float, default=0.0)
-
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
-    parser.add_argument(
-        "--timestep_residual_weight_fn",
-        type=str,
-        default="constant",
-        help="Mapping from timestep (0-1000) to residual weight multiplier.",
-    )
-    parser.add_argument(
-        "--timestep_residual_weight_power",
-        type=float,
-        default=1.0,
-        help="Optional power for timestep residual weight mapping.",
-    )
-    parser.add_argument(
-        "--timestep_residual_weight_exp_alpha",
-        type=float,
-        default=1.5,
-        help="Exponent alpha for exponential timestep residual weight mapping.",
-    )
     parser.add_argument("--world_size", type=int, default=1)
     parser.add_argument("--rank", type=int, default=0)
 
@@ -126,22 +99,6 @@ if __name__ == "__main__":
         trust_remote_code=True,
     ).to(device)
     pipe.transformer = SD35Transformer2DModel_RES(pipe.transformer)
-
-    if args.lora_ckpt is not None:
-        print(f"[LoRA] injecting & loading LoRA from: {args.lora_ckpt}")
-        target = "all_linear" if args.lora_target == "all_linear" else tuple(args.lora_target.split(","))
-        inject_lora(
-            pipe.transformer,
-            rank=args.lora_rank,
-            alpha=args.lora_alpha,
-            target=target,
-            dropout=args.lora_dropout,
-            is_train=False,
-        )
-        lora_sd = torch.load(args.lora_ckpt, map_location="cpu")
-        load_lora_state_dict(pipe.transformer, lora_sd, strict=True)
-        pipe.transformer.eval()
-        print("[LoRA] loaded and ready.")
 
     residual_rotation_matrices = None
     residual_rotation_meta = None
@@ -198,11 +155,6 @@ if __name__ == "__main__":
                 residual_weights=args.residual_weights,
                 residual_rotation_matrices=residual_rotation_matrices,
                 residual_rotation_meta=residual_rotation_meta,
-                residual_timestep_weight_fn=build_timestep_residual_weight_fn(
-                    args.timestep_residual_weight_fn,
-                    power=args.timestep_residual_weight_power,
-                    exp_alpha=args.timestep_residual_weight_exp_alpha,
-                ),
             )
 
         imgs = result.images

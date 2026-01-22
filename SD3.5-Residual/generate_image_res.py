@@ -26,96 +26,9 @@ else:
     XLA_AVAILABLE = False
     
 
-def build_timestep_residual_weight_fn(
-    name: Optional[str] = "constant",
-    power: float = 1.0,
-    exp_alpha: float = 1.5,   
-) -> Optional[Callable[[torch.Tensor, int], torch.Tensor]]:
-    if name is None:
-        return None
-
-    name = name.lower()
-
-    def _apply_power(weight: torch.Tensor) -> torch.Tensor:
-        if power != 1.0:
-            return weight ** power
-        return weight
-
-    def constant(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
-        weight = torch.ones_like(timestep, dtype=torch.float32)
-        return _apply_power(weight)
-
-    def linear(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
-        weight = timestep.float() / float(num_train_timesteps)
-        weight = weight.clamp(0.0, 1.0)
-        return _apply_power(weight)
-
-    def cosine(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
-        weight = 0.5 * (1.0 + torch.cos(torch.pi * (1 - timestep.float() / float(num_train_timesteps))))
-        return _apply_power(weight.clamp(0.0, 1.0))
-
-    def exponential(timestep: torch.Tensor, num_train_timesteps: int) -> torch.Tensor:
-        s = timestep.float() / float(num_train_timesteps)
-        weight = torch.exp(-exp_alpha * s)
-        return _apply_power(weight)
-
-    if name == "constant":
-        return constant
-    if name == "linear":
-        return linear
-    if name == "cosine":
-        return cosine
-    if name in ("exp", "exponential"):
-        return exponential
-
-    raise ValueError(f"Unsupported timestep residual weight fn: {name}")
-
-
 # -------------------------- 第二步：定义带残差参数的Pipeline（复用官方逻辑） --------------------------
 class SD35PipelineWithRES(StableDiffusion3Pipeline):
     """SD3.5 残差参数兼容Pipeline，完全复用官方逻辑，仅透传残差参数"""
-
-    @staticmethod
-    def _resolve_timestep_residual_weight(
-        timestep: torch.Tensor,
-        num_train_timesteps: int,
-        weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]],
-    ) -> Optional[torch.Tensor]:
-        if weight_fn is None:
-            return None
-        try:
-            weight = weight_fn(timestep, num_train_timesteps)
-        except TypeError:
-            weight = weight_fn(timestep)
-
-        if not torch.is_tensor(weight):
-            weight = torch.tensor(weight, device=timestep.device, dtype=timestep.dtype)
-        else:
-            weight = weight.to(device=timestep.device, dtype=timestep.dtype)
-
-        if weight.numel() > 1:
-            weight = weight.reshape(-1)[0]
-        return weight
-
-    @staticmethod
-    def _scale_residual_weights(
-        residual_weights: Optional[Union[List[float], torch.Tensor]],
-        timestep_weight: Optional[torch.Tensor],
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> Optional[torch.Tensor]:
-        if residual_weights is None:
-            return None
-        if timestep_weight is None:
-            if isinstance(residual_weights, torch.Tensor):
-                return residual_weights.to(device=device, dtype=dtype)
-            return torch.tensor(residual_weights, device=device, dtype=dtype)
-
-        if isinstance(residual_weights, torch.Tensor):
-            weights = residual_weights.to(device=device, dtype=dtype)
-        else:
-            weights = torch.tensor(residual_weights, device=device, dtype=dtype)
-        return weights * timestep_weight
 
     @torch.no_grad()
     def __call__(
@@ -160,7 +73,6 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
         residual_use_layernorm: bool = True,
         residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
         residual_rotation_meta: Optional[dict] = None,
-        residual_timestep_weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]] = None,
     ) -> Union[tuple, StableDiffusion3PipelineOutput]:
         # 复用官方__call__的前置逻辑（直接调用父类的核心逻辑）
         # 1. 基础初始化（和官方完全一致）
@@ -205,7 +117,6 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
         device = self._execution_device
 
         # 4. 文本编码（复用官方方法）
-        lora_scale = self.joint_attention_kwargs.get("scale", None) if self.joint_attention_kwargs is not None else None
         (
             prompt_embeds,
             negative_prompt_embeds,
@@ -227,7 +138,6 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
             clip_skip=self.clip_skip,
             num_images_per_prompt=num_images_per_prompt,
             max_sequence_length=max_sequence_length,
-            lora_scale=lora_scale,
         )
 
         if self.do_classifier_free_guidance:
@@ -290,9 +200,6 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
                 self._joint_attention_kwargs.update(ip_adapter_image_embeds=ip_adapter_image_embeds)
 
         # 8. 去噪循环（核心修改：透传残差参数）
-        weight_fn = None
-        if residual_weights is not None:
-            weight_fn = residual_timestep_weight_fn or build_timestep_residual_weight_fn()
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -301,17 +208,6 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
                 # 扩展latents用于CFG
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                 timestep = t.expand(latent_model_input.shape[0])
-                timestep_weight = self._resolve_timestep_residual_weight(
-                    timestep,
-                    self.scheduler.config.num_train_timesteps,
-                    weight_fn,
-                )
-                effective_residual_weights = self._scale_residual_weights(
-                    residual_weights,
-                    timestep_weight,
-                    device=latent_model_input.device,
-                    dtype=latent_model_input.dtype,
-                )
                 selected_rotations = resolve_rotation_bucket(
                     residual_rotation_matrices,
                     residual_rotation_meta,
@@ -328,7 +224,7 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
                     return_dict=False,
                     residual_target_layers=residual_target_layers,
                     residual_origin_layer=residual_origin_layer,
-                    residual_weights=effective_residual_weights,
+                    residual_weights=residual_weights,
                     residual_use_layernorm=residual_use_layernorm,
                     residual_rotation_matrices=selected_rotations,
                 )
@@ -362,7 +258,7 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
                             skip_layers=skip_guidance_layers,
                             residual_target_layers=residual_target_layers,
                             residual_origin_layer=residual_origin_layer,
-                            residual_weights=effective_residual_weights,
+                            residual_weights=residual_weights,
                             residual_use_layernorm=residual_use_layernorm,
                             residual_rotation_matrices=selected_rotations,
                         )

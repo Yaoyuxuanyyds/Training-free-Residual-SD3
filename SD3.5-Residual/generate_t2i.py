@@ -7,9 +7,7 @@ from tqdm import tqdm
 
 from generate_image_res import SD35PipelineWithRES
 from sd35_transformer_res import SD35Transformer2DModel_RES
-from sampler import build_timestep_residual_weight_fn
 from util import load_residual_procrustes, select_residual_rotations, set_seed, load_residual_weights
-from lora_utils import inject_lora, load_lora_state_dict
 
 
 torch.set_grad_enabled(False)
@@ -24,7 +22,6 @@ class SD35ImageGenerator:
         residual_weights=None,
         residual_rotation_matrices=None,
         residual_rotation_meta=None,
-        residual_timestep_weight_fn=None,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.pipe = SD35PipelineWithRES.from_pretrained(
@@ -39,7 +36,6 @@ class SD35ImageGenerator:
         self.residual_weights = residual_weights
         self.residual_rotation_matrices = residual_rotation_matrices
         self.residual_rotation_meta = residual_rotation_meta
-        self.residual_timestep_weight_fn = residual_timestep_weight_fn
 
     def generate(
         self,
@@ -53,14 +49,12 @@ class SD35ImageGenerator:
         residual_weights=None,
         residual_rotation_matrices=None,
         residual_rotation_meta=None,
-        residual_timestep_weight_fn=None,
     ):
         rt = residual_target_layers if residual_target_layers is not None else self.residual_target_layers
         ro = residual_origin_layer if residual_origin_layer is not None else self.residual_origin_layer
         rw = residual_weights if residual_weights is not None else self.residual_weights
         rr = residual_rotation_matrices if residual_rotation_matrices is not None else self.residual_rotation_matrices
         rr_meta = residual_rotation_meta if residual_rotation_meta is not None else self.residual_rotation_meta
-        rtw = residual_timestep_weight_fn if residual_timestep_weight_fn is not None else self.residual_timestep_weight_fn
 
         set_seed(seed)
         generator = torch.Generator(device=self.device).manual_seed(seed)
@@ -79,7 +73,6 @@ class SD35ImageGenerator:
                 residual_weights=rw,
                 residual_rotation_matrices=rr,
                 residual_rotation_meta=rr_meta,
-                residual_timestep_weight_fn=rtw,
             )
         image = result.images[0] if hasattr(result, "images") else result[0]
         if image.dim() == 4:
@@ -137,32 +130,6 @@ def parse_args():
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
-    parser.add_argument(
-        "--timestep_residual_weight_fn",
-        type=str,
-        default="constant",
-        help="Mapping from timestep (0-1000) to residual weight multiplier.",
-    )
-    parser.add_argument(
-        "--timestep_residual_weight_power",
-        type=float,
-        default=1.0,
-        help="Optional power for timestep residual weight mapping.",
-    )
-    parser.add_argument(
-        "--timestep_residual_weight_exp_alpha",
-        type=float,
-        default=1.5,
-        help="Exponent alpha for exponential timestep residual weight mapping.",
-    )
-
-    parser.add_argument('--lora_ckpt', type=str, default=None, help='Path to LoRA-only checkpoint (.pth)')
-    parser.add_argument('--lora_rank', type=int, default=8)
-    parser.add_argument('--lora_alpha', type=int, default=16)
-    parser.add_argument('--lora_target', type=str, default='all_linear',
-                        help="all_linear 或模块名片段，如: to_q,to_k,to_v,to_out")
-    parser.add_argument('--lora_dropout', type=float, default=0.0)
-
     parser.add_argument("--world_size", type=int, default=1)
     parser.add_argument("--rank", type=int, default=0)
 
@@ -195,28 +162,7 @@ def main(opt):
         residual_weights=opt.residual_weights,
         residual_rotation_matrices=residual_rotation_matrices,
         residual_rotation_meta=residual_rotation_meta,
-        residual_timestep_weight_fn=build_timestep_residual_weight_fn(
-            opt.timestep_residual_weight_fn,
-            power=opt.timestep_residual_weight_power,
-            exp_alpha=opt.timestep_residual_weight_exp_alpha,
-        ),
     )
-
-    if opt.lora_ckpt is not None:
-        print(f"[LoRA] injecting & loading LoRA from: {opt.lora_ckpt}")
-        target = "all_linear" if opt.lora_target == "all_linear" else tuple(opt.lora_target.split(","))
-        inject_lora(
-            generator.pipe.transformer,
-            rank=opt.lora_rank,
-            alpha=opt.lora_alpha,
-            target=target,
-            dropout=opt.lora_dropout,
-            is_train=False,
-        )
-        lora_sd = torch.load(opt.lora_ckpt, map_location="cpu")
-        load_lora_state_dict(generator.pipe.transformer, lora_sd, strict=True)
-        generator.pipe.transformer.eval()
-        print("[LoRA] loaded and ready.")
 
     prompt_files = sorted(glob.glob(os.path.join(opt.dataset_dir, "*.txt")))
     total_prompts = len(prompt_files)
@@ -250,7 +196,6 @@ def main(opt):
                 residual_origin_layer=opt.residual_origin_layer,
                 residual_weights=opt.residual_weights,
                 residual_rotation_matrices=residual_rotation_matrices,
-                residual_timestep_weight_fn=generator.residual_timestep_weight_fn,
             )
 
             if image.dim() == 3 and image.shape[0] != 3 and image.shape[-1] == 3:
