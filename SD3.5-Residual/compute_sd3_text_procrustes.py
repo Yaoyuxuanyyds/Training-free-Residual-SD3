@@ -247,7 +247,7 @@ def run(args: argparse.Namespace):
         gt_tensor = pil_to_tensor(gt_pil, device=device)
         z0 = encode_image_to_latent(pipe, gt_tensor)
 
-        prompt_embeds, _, pooled_prompt_embeds, _ = pipe.encode_prompt(
+        prompt_outputs = pipe.encode_prompt(
             prompt=prompt,
             prompt_2=None,
             prompt_3=None,
@@ -259,7 +259,17 @@ def run(args: argparse.Namespace):
             num_images_per_prompt=1,
             max_sequence_length=args.max_sequence_length,
         )
-        token_mask = None
+        if len(prompt_outputs) == 5:
+            prompt_embeds, _, pooled_prompt_embeds, _, token_mask = prompt_outputs
+        else:
+            prompt_embeds, _, pooled_prompt_embeds, _ = prompt_outputs
+            token_mask = None
+        if token_mask is None and args.use_padding_mask:
+            raise ValueError("encode_prompt did not return token_mask, but padding mask is enabled.")
+        if token_mask is not None:
+            token_mask = token_mask[0].to(torch.bool)
+            if not args.use_padding_mask or token_mask.sum() == 0:
+                token_mask = None
 
         for bucket_idx in range(num_buckets):
             start = bucket_edges[bucket_idx]
@@ -395,6 +405,7 @@ def parse_args():
 
     parser.add_argument("--timestep_buckets", type=int, default=1)
     parser.add_argument("--col_center", action="store_true")
+    parser.add_argument("--no-padding-mask", action="store_false", dest="use_padding_mask", default=True)
 
     parser.add_argument("--outdir", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/SD3.5-Residual/logs/procrustes_rotations/")
     parser.add_argument("--output", type=str, default="procrustes_rotations_coco5k_ln_t1.pt")

@@ -30,6 +30,116 @@ else:
 class SD35PipelineWithRES(StableDiffusion3Pipeline):
     """SD3.5 残差参数兼容Pipeline，完全复用官方逻辑，仅透传残差参数"""
 
+    def encode_prompt(
+        self,
+        prompt: Union[str, List[str]] = None,
+        prompt_2: Optional[Union[str, List[str]]] = None,
+        prompt_3: Optional[Union[str, List[str]]] = None,
+        device: Optional[torch.device] = None,
+        num_images_per_prompt: int = 1,
+        do_classifier_free_guidance: bool = True,
+        negative_prompt: Optional[Union[str, List[str]]] = None,
+        negative_prompt_2: Optional[Union[str, List[str]]] = None,
+        negative_prompt_3: Optional[Union[str, List[str]]] = None,
+        prompt_embeds: Optional[torch.FloatTensor] = None,
+        negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+        pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
+        negative_pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
+        max_sequence_length: int = 256,
+        **kwargs,
+    ):
+        prompt_outputs = super().encode_prompt(
+            prompt=prompt,
+            prompt_2=prompt_2,
+            prompt_3=prompt_3,
+            device=device,
+            num_images_per_prompt=num_images_per_prompt,
+            do_classifier_free_guidance=do_classifier_free_guidance,
+            negative_prompt=negative_prompt,
+            negative_prompt_2=negative_prompt_2,
+            negative_prompt_3=negative_prompt_3,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            pooled_prompt_embeds=pooled_prompt_embeds,
+            negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+            max_sequence_length=max_sequence_length,
+            **kwargs,
+        )
+
+        (
+            prompt_embeds,
+            negative_prompt_embeds,
+            pooled_prompt_embeds,
+            negative_pooled_prompt_embeds,
+        ) = prompt_outputs
+
+        token_mask = None
+        if prompt is not None and prompt_embeds is not None:
+            clip_tokenizer = getattr(self, "tokenizer", None) or getattr(self, "tokenizer_1", None)
+            clip_tokenizer_2 = getattr(self, "tokenizer_2", None)
+            t5_tokenizer = getattr(self, "tokenizer_3", None)
+
+            prompt_list = prompt if isinstance(prompt, (list, tuple)) else [prompt]
+            prompt_2_list = prompt_2 if prompt_2 is not None else prompt_list
+            if not isinstance(prompt_2_list, (list, tuple)):
+                prompt_2_list = [prompt_2_list]
+            prompt_3_list = prompt_3 if prompt_3 is not None else prompt_list
+            if not isinstance(prompt_3_list, (list, tuple)):
+                prompt_3_list = [prompt_3_list]
+
+            clip_mask = None
+            if clip_tokenizer is not None:
+                clip_tokens = clip_tokenizer(
+                    prompt_list,
+                    padding="max_length",
+                    max_length=clip_tokenizer.model_max_length,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                clip_mask = clip_tokens.attention_mask.bool()
+            if clip_tokenizer_2 is not None:
+                clip_tokens_2 = clip_tokenizer_2(
+                    prompt_2_list,
+                    padding="max_length",
+                    max_length=clip_tokenizer_2.model_max_length,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                clip_mask_2 = clip_tokens_2.attention_mask.bool()
+                clip_mask = clip_mask_2 if clip_mask is None else torch.logical_or(clip_mask, clip_mask_2)
+
+            t5_mask = None
+            if t5_tokenizer is not None:
+                t5_tokens = t5_tokenizer(
+                    prompt_3_list,
+                    padding="max_length",
+                    max_length=max_sequence_length,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                t5_mask = t5_tokens.attention_mask.bool()
+
+            if clip_mask is not None and t5_mask is not None:
+                token_mask = torch.cat([clip_mask, t5_mask], dim=1)
+            elif clip_mask is not None:
+                token_mask = clip_mask
+            elif t5_mask is not None:
+                token_mask = t5_mask
+
+            if token_mask is not None:
+                device = device or self._execution_device
+                token_mask = token_mask.to(device=device)
+                if num_images_per_prompt > 1:
+                    token_mask = token_mask.repeat_interleave(num_images_per_prompt, dim=0)
+
+        return (
+            prompt_embeds,
+            negative_prompt_embeds,
+            pooled_prompt_embeds,
+            negative_pooled_prompt_embeds,
+            token_mask,
+        )
+
     @torch.no_grad()
     def __call__(
         self,
@@ -117,12 +227,7 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
         device = self._execution_device
 
         # 4. 文本编码（复用官方方法）
-        (
-            prompt_embeds,
-            negative_prompt_embeds,
-            pooled_prompt_embeds,
-            negative_pooled_prompt_embeds,
-        ) = self.encode_prompt(
+        prompt_outputs = self.encode_prompt(
             prompt=prompt,
             prompt_2=prompt_2,
             prompt_3=prompt_3,
@@ -139,6 +244,13 @@ class SD35PipelineWithRES(StableDiffusion3Pipeline):
             num_images_per_prompt=num_images_per_prompt,
             max_sequence_length=max_sequence_length,
         )
+        (
+            prompt_embeds,
+            negative_prompt_embeds,
+            pooled_prompt_embeds,
+            negative_pooled_prompt_embeds,
+            _,
+        ) = prompt_outputs
 
         if self.do_classifier_free_guidance:
             if skip_guidance_layers is not None:
