@@ -14,7 +14,6 @@ from sampler import SD3Euler, build_timestep_residual_weight_fn
 from util import load_residual_procrustes, select_residual_rotations, load_residual_weights
 from dataset.datasets import get_target_dataset
 import json
-from lora_utils import *
 
 INTERPOLATIONS = {
     'bilinear': InterpolationMode.BILINEAR,
@@ -111,13 +110,8 @@ if __name__ == '__main__':
     )
 
 
-    # ---------- LoRA 采样支持 ---------- #
-    parser.add_argument('--lora_ckpt', type=str, default=None, help='Path to LoRA-only checkpoint (.pth)')
-    parser.add_argument('--lora_rank', type=int, default=8)
-    parser.add_argument('--lora_alpha', type=int, default=16)
-    parser.add_argument('--lora_target', type=str, default='all_linear',
-                        help="all_linear 或模块名片段，如: to_q,to_k,to_v,to_out")
-    parser.add_argument('--lora_dropout', type=float, default=0.0)
+    parser.add_argument("--world_size", type=int, default=1)
+    parser.add_argument("--rank", type=int, default=0)
 
 
     args = parser.parse_args()
@@ -132,22 +126,6 @@ if __name__ == '__main__':
         sampler = SD3Euler(use_8bit=False, load_ckpt_path=args.load_dir)
     else:
         raise ValueError('args.model should be one of [sd3, sdxl, sd1.5]')
-
-    # ---------- 如果提供了 LoRA ckpt，注入 + 加载 ----------
-    if args.lora_ckpt is not None:
-        print(f"[LoRA] injecting & loading LoRA from: {args.lora_ckpt}")
-        target = "all_linear" if args.lora_target == "all_linear" else tuple(args.lora_target.split(","))
-        # 对 sampler.denoiser（SD3Transformer2DModel_Vanilla）里的 transformer 注入
-        denoiser = sampler.denoiser
-        inject_lora(denoiser, rank=args.lora_rank, alpha=args.lora_alpha,
-                    target=target, dropout=args.lora_dropout)
-        denoiser.to(device=device, dtype=torch.float32)   # 就地转换
-        lora_sd = torch.load(args.lora_ckpt, map_location="cpu")
-        load_lora_state_dict(denoiser, lora_sd, strict=True)
-        
-        sampler.denoiser.eval()
-        print("[LoRA] loaded and ready.")
-
 
     residual_rotation_matrices = None
     residual_rotation_meta = None
@@ -188,24 +166,38 @@ if __name__ == '__main__':
 
         train_dataset = ConcatDataset(train_datasets)
         num = args.num if args.num != -1 else len(train_dataset)
-        train_dataset = Subset(train_dataset, list(range(num)))
+
+        indices = list(range(num))
+        if args.world_size > 1:
+            indices = [idx for idx in indices if idx % args.world_size == args.rank]
+
+        class IndexedDataset(torch.utils.data.Dataset):
+            def __init__(self, dataset):
+                self.dataset = dataset
+
+            def __len__(self):
+                return len(self.dataset)
+
+            def __getitem__(self, idx):
+                _, label = self.dataset[idx]
+                return idx, label
+
+        train_dataset = Subset(IndexedDataset(train_dataset), indices)
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=4)
         pbar = tqdm.tqdm(train_dataloader)
-        i = 0
         results = []
 
-        for _, label in pbar:
-            bs = len(label)
-            ids = list(range(i, i + bs))
+        for batch_indices, label in pbar:
+            ids = [int(i) for i in batch_indices]
 
             # 找出缺失样本（不重复生成）
             missing_ids = [t for t in ids if not os.path.exists(os.path.join(savedir, f'{t:04d}.png'))]
             if not missing_ids:
-                i += bs
                 continue
 
             # 当前批次的 prompts
-            sub_labels = [label[t - i] for t in missing_ids]
+            index_map = {idx: pos for pos, idx in enumerate(ids)}
+            sub_labels = [label[index_map[t]] for t in missing_ids]
 
             # -----------  🔥 统一 residual 采样逻辑 🔥 -----------
             with torch.inference_mode():
@@ -245,8 +237,6 @@ if __name__ == '__main__':
                 save_image(img[bi], os.path.join(savedir, imgname), normalize=True)
                 results.append({"prompt": sub_labels[bi], "img_path": imgname})
                 pbar.set_description(f'SD Sampling [{t}/{num}]')
-
-            i += bs
             
         # save config
         if os.path.exists(os.path.join(args.load_dir, f"results-{config}.json")):
