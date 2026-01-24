@@ -201,6 +201,7 @@ if __name__ == '__main__':
 
             # -----------  🔥 统一 residual 采样逻辑 🔥 -----------
             with torch.inference_mode():
+                set_seed(args.seed)
                 if args.residual_origin_layer is None:
                     # 普通采样
                     img = sampler.sample(

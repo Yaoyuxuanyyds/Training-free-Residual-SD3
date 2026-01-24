@@ -110,7 +110,7 @@ if __name__ == "__main__":
         help="0 for null prompt, 1 for only using conditional prompt",
     )
     parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--load_dir", type=str, default=None, help="replace it with your checkpoint")
+    parser.add_argument("--load_dir", type=str, default="/inspire/hdd/project/chineseculture/yaoyuxuan-CZXS25220085/p-yaoyuxuan/REPA-SD3-1/flux/FLUX.1-dev", help="replace it with your checkpoint")
     parser.add_argument("--save_dir", type=str, default=None, help="default savedir is set to under load_dir")
     parser.add_argument("--datadir", type=str, default="", help="data path")
     parser.add_argument("--model", type=str, default="flux", choices=["flux"])
@@ -197,6 +197,7 @@ if __name__ == "__main__":
             index_map = {idx: pos for pos, idx in enumerate(ids)}
             sub_labels = [label[index_map[t]] for t in missing_ids]
 
+            set_seed(args.seed)
             images = sampler.sample(
                 sub_labels,
                 NFE=args.NFE,
