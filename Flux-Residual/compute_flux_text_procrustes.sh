@@ -13,6 +13,6 @@ CUDA_VISIBLE_DEVICES=0 python compute_flux_text_procrustes.py \
   --num-samples 5000 \
   --origin-layer 2 \
   --target-layer-start 3 \
-  --output /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/Flux-Residual/logs/procrustes_rotations/procrustes_rotations_coco5k_ln_t1-full-o2.pt \
+  --output /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/Flux-Residual/logs/procrustes_rotations/procrustes_rotations_coco5k_ln_t4-full-o2.pt \
   --col-center \
-  --timestep-buckets 1 \
+  --timestep-buckets 4 \

@@ -108,6 +108,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
     ) -> Union[torch.FloatTensor, Transformer2DModelOutput]:
 
+        output_hidden_states = True
         height, width = hidden_states.shape[-2:]
         hidden_states = self.base_model.pos_embed(hidden_states)
 
@@ -116,11 +117,15 @@ class SD3Transformer2DModel_Residual(nn.Module):
         if force_txt_grad and not encoder_hidden_states.requires_grad:
             encoder_hidden_states = encoder_hidden_states.detach().requires_grad_(True)
 
-        context_embedder_output = encoder_hidden_states
 
         img_hidden_states_list = []
         txt_hidden_states_list = []
         txt_input_states_list = []
+        
+        context_embedder_output = encoder_hidden_states
+        txt_hidden_states_list.append(encoder_hidden_states)
+        
+ 
 
         # ---------------- residual config ----------------
         use_residual = (
