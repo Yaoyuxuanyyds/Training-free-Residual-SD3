@@ -81,10 +81,12 @@ if __name__ == "__main__":
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
+    parser.add_argument("--residual_use_layernorm", type=int, default=1)
     parser.add_argument("--world_size", type=int, default=1)
     parser.add_argument("--rank", type=int, default=0)
 
     args = parser.parse_args()
+    args.residual_use_layernorm = bool(args.residual_use_layernorm)
 
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -153,6 +155,7 @@ if __name__ == "__main__":
                 residual_target_layers=args.residual_target_layers,
                 residual_origin_layer=args.residual_origin_layer,
                 residual_weights=args.residual_weights,
+                residual_use_layernorm=args.residual_use_layernorm,
                 residual_rotation_matrices=residual_rotation_matrices,
                 residual_rotation_meta=residual_rotation_meta,
             )

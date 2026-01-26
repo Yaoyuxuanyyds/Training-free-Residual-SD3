@@ -38,6 +38,7 @@ class FluxGenevalGenerator:
         residual_target_layers: Optional[List[int]] = None,
         residual_origin_layer: Optional[int] = None,
         residual_weights: Optional[List[float]] = None,
+        residual_use_layernorm: bool = True,
         residual_rotation_matrices: Optional[torch.Tensor] = None,
         residual_rotation_meta: Optional[dict] = None,
     ):
@@ -79,6 +80,7 @@ class FluxGenevalGenerator:
             "residual_target_layers": residual_target_layers,
             "residual_origin_layer": residual_origin_layer,
             "residual_weights": residual_weights,
+            "residual_use_layernorm": residual_use_layernorm,
             "residual_rotation_matrices": residual_rotation_matrices,
             "residual_rotation_meta": residual_rotation_meta,
         }
@@ -151,8 +153,12 @@ def parse_args():
                         help="从文件加载学习得到的残差权重")
     parser.add_argument("--residual_procrustes_path", type=str, default=None,
                         help="Procrustes旋转矩阵路径")
+    parser.add_argument("--residual_use_layernorm", type=int, default=1,
+                        help="是否在残差分支使用LayerNorm（1启用，0禁用）")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.residual_use_layernorm = bool(args.residual_use_layernorm)
+    return args
 
 
 # -------------------------- 主函数（geneval批量生成逻辑，不变）--------------------------
@@ -192,6 +198,7 @@ def main(opt):
         residual_target_layers=opt.residual_target_layers,
         residual_origin_layer=opt.residual_origin_layer,
         residual_weights=opt.residual_weights,
+        residual_use_layernorm=opt.residual_use_layernorm,
         residual_rotation_matrices=residual_rotation_matrices,
         residual_rotation_meta=residual_rotation_meta,
     )

@@ -64,8 +64,11 @@ if __name__ == "__main__":
                         help="从文件加载学习得到的残差权重")
     parser.add_argument("--residual_procrustes_path", type=str, default=None,
                         help="Procrustes旋转矩阵路径")
+    parser.add_argument("--residual_use_layernorm", type=int, default=1,
+                        help="是否在残差分支使用LayerNorm（1启用，0禁用）")
 
     args = parser.parse_args()
+    args.residual_use_layernorm = bool(args.residual_use_layernorm)
     set_seed(args.seed)  # 全局基础seed=42
 
     # 设备配置：强制单卡GPU
@@ -123,6 +126,7 @@ if __name__ == "__main__":
         "residual_target_layers": args.residual_target_layers,
         "residual_origin_layer": args.residual_origin_layer,
         "residual_weights": args.residual_weights,
+        "residual_use_layernorm": args.residual_use_layernorm,
         "residual_rotation_matrices": residual_rotation_matrices,
         "residual_rotation_meta": residual_rotation_meta,
     }

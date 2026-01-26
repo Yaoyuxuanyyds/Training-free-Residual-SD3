@@ -26,6 +26,7 @@ class SD3ImageGenerator:
         residual_target_layers=None,
         residual_origin_layer=None,
         residual_weights=None,
+        residual_use_layernorm: bool = True,
         residual_rotation_matrices=None,
         residual_rotation_meta=None,
         residual_timestep_weight_fn=None,
@@ -46,6 +47,7 @@ class SD3ImageGenerator:
         self.residual_target_layers = residual_target_layers
         self.residual_origin_layer = residual_origin_layer
         self.residual_weights = residual_weights
+        self.residual_use_layernorm = residual_use_layernorm
         self.residual_rotation_matrices = residual_rotation_matrices
         self.residual_rotation_meta = residual_rotation_meta
         self.residual_timestep_weight_fn = residual_timestep_weight_fn
@@ -60,6 +62,7 @@ class SD3ImageGenerator:
         residual_target_layers=None,
         residual_origin_layer=None,
         residual_weights=None,
+        residual_use_layernorm: bool = True,
         residual_rotation_matrices=None,
         residual_rotation_meta=None,
         residual_timestep_weight_fn=None,
@@ -73,6 +76,7 @@ class SD3ImageGenerator:
         rt = residual_target_layers if residual_target_layers is not None else self.residual_target_layers
         ro = residual_origin_layer if residual_origin_layer is not None else self.residual_origin_layer
         rw = residual_weights if residual_weights is not None else self.residual_weights
+        rln = residual_use_layernorm if residual_use_layernorm is not None else self.residual_use_layernorm
         rr = residual_rotation_matrices if residual_rotation_matrices is not None else self.residual_rotation_matrices
         rr_meta = (
             residual_rotation_meta
@@ -110,6 +114,7 @@ class SD3ImageGenerator:
                     residual_target_layers=rt,
                     residual_origin_layer=ro,
                     residual_weights=rw,
+                    residual_use_layernorm=rln,
                     residual_rotation_matrices=rr,
                     residual_rotation_meta=rr_meta,
                     residual_timestep_weight_fn=rtw,
@@ -172,6 +177,7 @@ def parse_args():
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
+    parser.add_argument("--residual_use_layernorm", type=int, default=1)
     parser.add_argument(
         "--timestep_residual_weight_fn",
         type=str,
@@ -217,6 +223,7 @@ def parse_args():
     )
 
     opt = parser.parse_args()
+    opt.residual_use_layernorm = bool(opt.residual_use_layernorm)
 
     # 保证 seeds 数量 ≥ n_samples（你也可以要求 ==）
     assert len(opt.seeds) >= opt.n_samples, \
@@ -264,6 +271,7 @@ def main(opt):
         residual_target_layers=opt.residual_target_layers,
         residual_origin_layer=opt.residual_origin_layer,
         residual_weights=opt.residual_weights,
+        residual_use_layernorm=opt.residual_use_layernorm,
         residual_rotation_matrices=residual_rotation_matrices,
         residual_rotation_meta=residual_rotation_meta,
         residual_timestep_weight_fn=build_timestep_residual_weight_fn(
@@ -331,6 +339,7 @@ def main(opt):
                     img_size=opt.H,
                     steps=opt.steps,
                     scale=opt.scale,
+                    residual_use_layernorm=opt.residual_use_layernorm,
                     residual_timestep_weight_fn=generator.residual_timestep_weight_fn,
                 )
 

@@ -27,6 +27,7 @@ class SD35ImageGenerator:
         residual_target_layers=None,
         residual_origin_layer=None,
         residual_weights=None,
+        residual_use_layernorm: bool = True,
         residual_rotation_matrices=None,
         residual_rotation_meta=None,
     ):
@@ -42,6 +43,7 @@ class SD35ImageGenerator:
         self.residual_target_layers = residual_target_layers
         self.residual_origin_layer = residual_origin_layer
         self.residual_weights = residual_weights
+        self.residual_use_layernorm = residual_use_layernorm
         self.residual_rotation_matrices = residual_rotation_matrices
         self.residual_rotation_meta = residual_rotation_meta
 
@@ -55,12 +57,14 @@ class SD35ImageGenerator:
         residual_target_layers=None,
         residual_origin_layer=None,
         residual_weights=None,
+        residual_use_layernorm: bool = True,
         residual_rotation_matrices=None,
         residual_rotation_meta=None,
     ):
         rt = residual_target_layers if residual_target_layers is not None else self.residual_target_layers
         ro = residual_origin_layer if residual_origin_layer is not None else self.residual_origin_layer
         rw = residual_weights if residual_weights is not None else self.residual_weights
+        rln = residual_use_layernorm if residual_use_layernorm is not None else self.residual_use_layernorm
         rr = residual_rotation_matrices if residual_rotation_matrices is not None else self.residual_rotation_matrices
         rr_meta = residual_rotation_meta if residual_rotation_meta is not None else self.residual_rotation_meta
 
@@ -79,6 +83,7 @@ class SD35ImageGenerator:
                 residual_target_layers=rt,
                 residual_origin_layer=ro,
                 residual_weights=rw,
+                residual_use_layernorm=rln,
                 residual_rotation_matrices=rr,
                 residual_rotation_meta=rr_meta,
             )
@@ -102,11 +107,14 @@ def parse_args():
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
+    parser.add_argument("--residual_use_layernorm", type=int, default=1)
     parser.add_argument("--world_size", type=int, default=1)
     parser.add_argument("--rank", type=int, default=0)
     parser.add_argument("--load_dir", type=str, default=None)
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.residual_use_layernorm = bool(args.residual_use_layernorm)
+    return args
 
 
 def main(args):
@@ -145,6 +153,7 @@ def main(args):
         residual_target_layers=args.residual_target_layers,
         residual_origin_layer=args.residual_origin_layer,
         residual_weights=args.residual_weights,
+        residual_use_layernorm=args.residual_use_layernorm,
         residual_rotation_matrices=residual_rotation_matrices,
         residual_rotation_meta=residual_rotation_meta,
     )
@@ -186,6 +195,7 @@ def main(args):
                         residual_target_layers=args.residual_target_layers,
                         residual_origin_layer=args.residual_origin_layer,
                         residual_weights=args.residual_weights,
+                        residual_use_layernorm=args.residual_use_layernorm,
                         residual_rotation_matrices=residual_rotation_matrices,
                     )
 

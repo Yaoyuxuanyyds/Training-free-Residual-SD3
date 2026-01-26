@@ -35,6 +35,7 @@ class FluxResGenerator:
         residual_target_layers=None,
         residual_origin_layer=None,
         residual_weights=None,
+        residual_use_layernorm: bool = True,
         residual_rotation_matrices=None,
         residual_rotation_meta=None,
         cfg=3.5,  # Flux默认引导尺度（原Qwen的4.0调整为Flux推荐值）
@@ -77,6 +78,7 @@ class FluxResGenerator:
             "residual_target_layers": residual_target_layers,
             "residual_origin_layer": residual_origin_layer,
             "residual_weights": residual_weights,
+            "residual_use_layernorm": residual_use_layernorm,
             "residual_rotation_matrices": residual_rotation_matrices,
             "residual_rotation_meta": residual_rotation_meta,
         }
@@ -145,12 +147,14 @@ def parse_args():
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
+    parser.add_argument("--residual_use_layernorm", type=int, default=1)
 
     # 多卡参数（保留原逻辑，支持多GPU分片）
     parser.add_argument("--world_size", type=int, default=1)
     parser.add_argument("--rank", type=int, default=0)
 
     opt = parser.parse_args()
+    opt.residual_use_layernorm = bool(opt.residual_use_layernorm)
     assert len(opt.seeds) >= opt.n_samples, "Seeds 数量不足 n_samples"
 
     return opt
@@ -189,6 +193,7 @@ def main(opt):
         residual_target_layers=opt.residual_target_layers,
         residual_origin_layer=opt.residual_origin_layer,
         residual_weights=opt.residual_weights,
+        residual_use_layernorm=opt.residual_use_layernorm,
         residual_rotation_matrices=residual_rotation_matrices,
         residual_rotation_meta=residual_rotation_meta,
         cfg=opt.cfg,
