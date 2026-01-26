@@ -11,8 +11,9 @@ CUDA_VISIBLE_DEVICES=0 python compute_sd3_text_procrustes.py \
   --dataset blip3o60k \
   --datadir /inspire/hdd/project/chineseculture/public/yuxuan/datasets \
   --num-samples 5000 \
-  --origin-layer 2 \
-  --target-layer-start 3 \
-  --output /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln_t1-o2.pt \
+  --origin-layer 16 \
+  --target-layer-start 17 \
+  --output /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln_t1-o16.pt \
   --timestep-buckets 1 \
   --col-center
+  

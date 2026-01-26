@@ -61,25 +61,28 @@ class SD3Transformer2DModel_Residual(nn.Module):
             target_nograd = target
             origin_nograd = origin
 
-        # --- standardize ---
-        t_norm, t_mean, t_std = self._standardize_tokenwise(target_nograd)
-        o_norm, _, _ = self._standardize_tokenwise(origin_nograd)
-        if rotation_matrix is not None:
-            o_norm = torch.matmul(o_norm, rotation_matrix)
+        if use_layernorm:
+            # --- standardize ---
+            t_norm, t_mean, t_std = self._standardize_tokenwise(target_nograd)
+            o_norm, _, _ = self._standardize_tokenwise(origin_nograd)
+            if rotation_matrix is not None:
+                o_norm = torch.matmul(o_norm, rotation_matrix)
 
-        # --- residual rule ---
-        if w >= 0:
-            mixed = t_norm + w * o_norm
+            # --- residual rule ---
+            if w >= 0:
+                mixed = t_norm + w * o_norm
+            else:
+                mixed = t_norm * (1 - w)
+
+            # --- restandardize ---
+            mixed = torch.nn.functional.layer_norm(
+                mixed, normalized_shape=mixed.shape[-1:], eps=1e-6
+            )
+
+            # --- restore original scale ---
+            return mixed * t_std + t_mean
         else:
-            mixed = t_norm * (1 - w)
-
-        # --- restandardize ---
-        mixed = torch.nn.functional.layer_norm(
-            mixed, normalized_shape=mixed.shape[-1:], eps=1e-6
-        )
-
-        # --- restore original scale ---
-        return mixed * t_std + t_mean
+            return target_nograd + w * origin_nograd
 
 
     # ===============================================================
