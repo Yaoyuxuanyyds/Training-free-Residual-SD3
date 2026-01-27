@@ -56,7 +56,7 @@ class SD3ImageGenerator:
         self,
         prompt,
         seed,
-        img_size,
+        img_shape,
         steps,
         scale,
         residual_target_layers=None,
@@ -99,7 +99,7 @@ class SD3ImageGenerator:
                 img = self.sampler.sample(
                     prompts,
                     NFE=steps,
-                    img_shape=(img_size, img_size),
+                    img_shape=img_shape,
                     cfg_scale=scale,
                     batch_size=1,
                 )
@@ -108,7 +108,7 @@ class SD3ImageGenerator:
                 img = self.sampler.sample_residual(
                     prompts,
                     NFE=steps,
-                    img_shape=(img_size, img_size),
+                    img_shape=img_shape,
                     cfg_scale=scale,
                     batch_size=1,
                     residual_target_layers=rt,
@@ -142,7 +142,9 @@ def parse_args():
         default="/inspire/hdd/project/chineseculture/public/yuxuan/benches/T2I-CompBench/examples/dataset",
     )
     parser.add_argument(
+        "--model_dir",
         "--model",
+        dest="model_dir",
         type=str,
         default="/inspire/hdd/project/chineseculture/public/yuxuan/base_models/Diffusion/sd3",
     )
@@ -156,9 +158,9 @@ def parse_args():
     parser.add_argument("--n_samples", type=int, default=10)
     parser.add_argument("--steps", type=int, default=28)
     parser.add_argument("--negative-prompt", type=str, default="")
-    parser.add_argument("--H", type=int, default=1024)
-    parser.add_argument("--W", type=int, default=1024)
-    parser.add_argument("--scale", type=float, default=7.0)
+    parser.add_argument("--height", "--H", dest="height", type=int, default=1024)
+    parser.add_argument("--width", "--W", dest="width", type=int, default=1024)
+    parser.add_argument("--cfg", "--scale", dest="cfg", type=float, default=7.0)
 
     # 注意：默认给 10 个 seed，对应 n_samples=10
     parser.add_argument(
@@ -266,7 +268,7 @@ def main(opt):
         opt.residual_weights = load_residual_weights(opt.residual_weights_path)
 
     generator = SD3ImageGenerator(
-        model_key=opt.model,
+        model_key=opt.model_dir,
         load_ckpt_path=None,
         residual_target_layers=opt.residual_target_layers,
         residual_origin_layer=opt.residual_origin_layer,
@@ -304,48 +306,58 @@ def main(opt):
     txt_files = sorted(glob.glob(os.path.join(opt.dataset_dir, "*val.txt")))
     total_files = len(txt_files)
 
-    # ========= 多 GPU 分片：按下标对 world_size 取模 =========
-    if opt.world_size > 1:
-        txt_files = [f for i, f in enumerate(txt_files) if i % opt.world_size == opt.rank]
-
-    print(f"[Rank {opt.rank}] Total txt files: {total_files}, this rank will handle: {len(txt_files)}")
-
-    # ========= 处理每个 txt 文件 =========
+    # 先收集所有 prompt，按全局索引分片
+    prompt_items = []
     for txt_path in txt_files:
         txt_name = os.path.splitext(os.path.basename(txt_path))[0]
+        with open(txt_path, "r") as f:
+            prompts = [x.strip() for x in f if x.strip()]
+        for prompt in prompts:
+            prompt_items.append((txt_path, txt_name, prompt))
+
+    total_prompts = len(prompt_items)
+    if opt.world_size > 1:
+        prompt_items = [
+            item for i, item in enumerate(prompt_items) if i % opt.world_size == opt.rank
+        ]
+
+    print(
+        f"[Rank {opt.rank}] Total txt files: {total_files}, total prompts: {total_prompts}, "
+        f"this rank prompts: {len(prompt_items)}"
+    )
+
+    # ========= 每个 prompt × n_samples =========
+    # 实际用的是前 n_samples 个 seeds
+    seeds_to_use = opt.seeds[:opt.n_samples]
+
+    for txt_path, txt_name, prompt in tqdm(
+        prompt_items, desc=f"[Rank {opt.rank}] prompts"
+    ):
         outdir = os.path.join(opt.outdir_base, f"samples_{opt.output_prefix}_{txt_name}")
         os.makedirs(outdir, exist_ok=True)
 
-        with open(txt_path, "r") as f:
-            prompts = [x.strip() for x in f if x.strip()]
+        prompt_clean = clean_prompt_for_filename(prompt)
 
-        # ========= 每个 prompt × n_samples =========
-        # 实际用的是前 n_samples 个 seeds
-        seeds_to_use = opt.seeds[:opt.n_samples]
+        for si, seed in enumerate(seeds_to_use):
+            fname = f"{prompt_clean}_{si:06d}.png"
+            fpath = os.path.join(outdir, fname)
 
-        for prompt_idx, prompt in enumerate(tqdm(prompts, desc=f"[Rank {opt.rank}] {txt_name}")):
-            prompt_clean = clean_prompt_for_filename(prompt)
+            if os.path.exists(fpath):
+                continue
 
-            for si, seed in enumerate(seeds_to_use):
-                fname = f"{prompt_clean}_{si:06d}.png"
-                fpath = os.path.join(outdir, fname)
+            img = generator.generate(
+                prompt=prompt,
+                seed=seed,
+                img_shape=(opt.height, opt.width),
+                steps=opt.steps,
+                scale=opt.cfg,
+                residual_use_layernorm=opt.residual_use_layernorm,
+                residual_timestep_weight_fn=generator.residual_timestep_weight_fn,
+            )
 
-                if os.path.exists(fpath):
-                    continue
-
-                img = generator.generate(
-                    prompt=prompt,
-                    seed=seed,
-                    img_size=opt.H,
-                    steps=opt.steps,
-                    scale=opt.scale,
-                    residual_use_layernorm=opt.residual_use_layernorm,
-                    residual_timestep_weight_fn=generator.residual_timestep_weight_fn,
-                )
-
-                # 如果你更喜欢 PIL：
-                # tensor_to_pil(img).save(fpath)
-                save_image(img, fpath, normalize=True)
+            # 如果你更喜欢 PIL：
+            # tensor_to_pil(img).save(fpath)
+            save_image(img, fpath, normalize=True)
 
     print(f"[Rank {opt.rank}] All done.")
 
