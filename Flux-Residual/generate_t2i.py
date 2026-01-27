@@ -206,38 +206,47 @@ def main(opt):
     txt_files = sorted(glob.glob(os.path.join(opt.dataset_dir, "*val.txt")))
     total_files = len(txt_files)
 
-    # 多卡分片（保留原逻辑）
-    if opt.world_size > 1:
-        txt_files = [f for i, f in enumerate(txt_files) if i % opt.world_size == opt.rank]
-
-    print(f"[Rank {opt.rank}] total txt={total_files}, this rank={len(txt_files)}")
-    seeds_to_use = opt.seeds[:opt.n_samples]
-
-    # 遍历 txt 文件（保留原逻辑）
+    # 先收集所有 prompt，按全局索引分片
+    prompt_items = []
     for txt_path in txt_files:
         txt_name = os.path.splitext(os.path.basename(txt_path))[0]
+        with open(txt_path, "r") as f:
+            prompts = [x.strip() for x in f if x.strip()]
+        for prompt in prompts:
+            prompt_items.append((txt_path, txt_name, prompt))
+
+    total_prompts = len(prompt_items)
+    if opt.world_size > 1:
+        prompt_items = [
+            item for i, item in enumerate(prompt_items) if i % opt.world_size == opt.rank
+        ]
+
+    print(
+        f"[Rank {opt.rank}] total txt={total_files}, total prompts={total_prompts}, "
+        f"this rank prompts={len(prompt_items)}"
+    )
+    seeds_to_use = opt.seeds[:opt.n_samples]
+
+    # 遍历每行 prompt（断点续跑+批量生成）
+    for txt_path, txt_name, prompt in tqdm(
+        prompt_items, desc=f"[Rank {opt.rank}] prompts"
+    ):
         # 保存路径保留原格式，仅修改前缀为Flux残差标识
         outdir = os.path.join(opt.outdir_base, f"samples_{opt.output_prefix}_{txt_name}")
         os.makedirs(outdir, exist_ok=True)
 
-        # 加载 prompts（保留原逻辑）
-        with open(txt_path, "r") as f:
-            prompts = [x.strip() for x in f if x.strip()]
+        prompt_clean = clean_prompt_for_filename(prompt)
 
-        # 遍历每行 prompt（保留原逻辑，断点续跑+批量生成）
-        for prompt in tqdm(prompts, desc=f"[Rank {opt.rank}] {txt_name}"):
-            prompt_clean = clean_prompt_for_filename(prompt)
+        for si, seed in enumerate(seeds_to_use):
+            fname = f"{prompt_clean}_{si:06d}.png"
+            fpath = os.path.join(outdir, fname)
 
-            for si, seed in enumerate(seeds_to_use):
-                fname = f"{prompt_clean}_{si:06d}.png"
-                fpath = os.path.join(outdir, fname)
+            if os.path.exists(fpath):
+                continue
 
-                if os.path.exists(fpath):
-                    continue
-
-                # 调用Flux残差生成器（替换原Qwen生成调用）
-                img = generator.generate(prompt=prompt, seed=seed)
-                save_image(img, fpath, normalize=True)
+            # 调用Flux残差生成器（替换原Qwen生成调用）
+            img = generator.generate(prompt=prompt, seed=seed)
+            save_image(img, fpath, normalize=True)
 
     print(f"[Rank {opt.rank}] All Done.")
 
