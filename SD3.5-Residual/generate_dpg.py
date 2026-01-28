@@ -47,7 +47,15 @@ def set_seed(seed):
 
 def make_grid_2x2(imgs):
     assert len(imgs) == 4
-    pil_imgs = [(torch.clamp(img * 0.5 + 0.5, 0, 1) * 255).permute(1, 2, 0).byte().cpu().numpy() for img in imgs]
+    pil_imgs = [
+        (torch.clamp(img, 0, 1) * 255)
+        .permute(1, 2, 0)
+        .byte()
+        .cpu()
+        .numpy()
+        for img in imgs
+    ]
+
     pil_imgs = [Image.fromarray(p) for p in pil_imgs]
 
     w, h = pil_imgs[0].size
