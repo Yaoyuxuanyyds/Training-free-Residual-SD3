@@ -196,6 +196,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
         # ----------- STOP GRADIENT PART -----------
         # residual 的 2 个输入都不参与梯度
+        rotation_matrix = None
         if stop_grad:
             target_nograd = target.detach()
             origin_nograd = origin.detach()
@@ -227,9 +228,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
             return target_nograd + w * origin_nograd
 
 
-    # ===============================================================
-    #  forward
-    # ===============================================================
+
     def forward(
         self,
         hidden_states: torch.FloatTensor,
@@ -249,63 +248,55 @@ class SD3Transformer2DModel_Residual(nn.Module):
         residual_target_layers: Optional[List[int]] = None,
         residual_origin_layer: Optional[int] = None,
         residual_weights: Optional[Union[List[float], torch.Tensor]] = None,
-        residual_use_layernorm: bool = True,         # ⭐ 新增
+        residual_use_layernorm: bool = True,
         residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+
+        # --- profiling 参数 ---
         profile_time: bool = False,
         profile_time_sync: bool = True,
-        profile_time_path: Optional[str] = None,
+        profile_target_layers: Optional[List[int]] = [12],
+        profile_time_path: Optional[str] = "/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/time_statis.txt",
         profile_time_run_id: Optional[str] = None,
         profile_time_append: bool = True,
     ) -> Union[torch.FloatTensor, Transformer2DModelOutput]:
 
-        output_hidden_states = True
+        # ---------------- utils ----------------
         if profile_time:
-            def _write_timings(path: str, total_time: float):
-                mode = "a" if profile_time_append else "w"
-                run_id = profile_time_run_id or time.strftime("%Y%m%d-%H%M%S")
-                with open(path, mode, encoding="utf-8") as handle:
-                    handle.write(f"run_id={run_id}\n")
-                    handle.write(f"total: {total_time:.6f}s\n")
-                    handle.write("\n")
-
             def _sync():
                 if profile_time_sync and hidden_states.is_cuda:
                     torch.cuda.synchronize()
 
-            _sync()
-            t0 = time.perf_counter()
+            def _write_layer_timing(
+                path: str,
+                layer: int,
+                residual_time: float,
+                block_time: float,
+            ):
+                mode = "a" if profile_time_append else "w"
+                run_id = profile_time_run_id or time.strftime("%Y%m%d-%H%M%S")
+                with open(path, mode, encoding="utf-8") as f:
+                    f.write(
+                        f"run_id={run_id}, "
+                        f"layer={layer}, "
+                        f"residual={residual_time:.6f}s, "
+                        f"block={block_time:.6f}s\n"
+                    )
+
+        # ---------------- pre ----------------
         height, width = hidden_states.shape[-2:]
         hidden_states = self.base_model.pos_embed(hidden_states)
-        if profile_time:
-            _sync()
-            t1 = time.perf_counter()
-            _mark("pos_embed", t0, t1)
-            last_timestamp = t1
-
         temb = self.base_model.time_text_embed(timestep, pooled_projections)
-        if profile_time:
-            _sync()
-            t2 = time.perf_counter()
-            _mark("time_text_embed", t1, t2)
-            last_timestamp = t2
         encoder_hidden_states = self.base_model.context_embedder(encoder_hidden_states)
-        if profile_time:
-            _sync()
-            t3 = time.perf_counter()
-            _mark("context_embedder", t2, t3)
-            last_timestamp = t3
+
         if force_txt_grad and not encoder_hidden_states.requires_grad:
             encoder_hidden_states = encoder_hidden_states.detach().requires_grad_(True)
-
 
         img_hidden_states_list = []
         txt_hidden_states_list = []
         txt_input_states_list = []
-        
+
         context_embedder_output = encoder_hidden_states
         txt_hidden_states_list.append(encoder_hidden_states)
-        
- 
 
         # ---------------- residual config ----------------
         use_residual = (
@@ -315,8 +306,9 @@ class SD3Transformer2DModel_Residual(nn.Module):
         )
 
         if use_residual:
-            residual_target_to_idx = {layer: idx for idx, layer in enumerate(residual_target_layers)}
+            residual_target_to_idx = {l: i for i, l in enumerate(residual_target_layers)}
             residual_target_set = set(residual_target_layers)
+
             residual_weights = torch.as_tensor(
                 residual_weights,
                 dtype=encoder_hidden_states.dtype,
@@ -326,154 +318,126 @@ class SD3Transformer2DModel_Residual(nn.Module):
             residual_rotations = None
             if residual_rotation_matrices is not None:
                 if isinstance(residual_rotation_matrices, (list, tuple)):
-                    if all(torch.is_tensor(r) for r in residual_rotation_matrices):
-                        residual_rotations = torch.stack(residual_rotation_matrices, dim=0)
-                    else:
-                        residual_rotations = torch.tensor(residual_rotation_matrices)
-                elif torch.is_tensor(residual_rotation_matrices):
-                    residual_rotations = residual_rotation_matrices
+                    residual_rotations = torch.stack(residual_rotation_matrices, dim=0)
                 else:
-                    raise TypeError(
-                        "residual_rotation_matrices must be a Tensor or a list/tuple of Tensors."
-                    )
+                    residual_rotations = residual_rotation_matrices
                 if residual_rotations.dim() == 2:
                     residual_rotations = residual_rotations.unsqueeze(0)
-                if residual_rotations.dim() != 3:
-                    raise ValueError(
-                        "residual_rotation_matrices must have shape (N, D, D) or (D, D)."
-                    )
                 residual_rotations = residual_rotations.to(
                     device=encoder_hidden_states.device,
                     dtype=encoder_hidden_states.dtype,
                 )
-                if residual_rotations.shape[0] != len(residual_target_layers):
-                    raise ValueError(
-                        "residual_rotation_matrices length must match residual_target_layers."
-                    )
-                if residual_rotations.shape[-1] != encoder_hidden_states.shape[-1] or \
-                    residual_rotations.shape[-2] != encoder_hidden_states.shape[-1]:
-                    raise ValueError(
-                        "residual_rotation_matrices feature dimension must match encoder_hidden_states."
-                    )
 
-            pre_encoder_states = []
+            pre_encoder_states: List[torch.Tensor] = []
 
-        # ---------------- iterate transformer blocks ----------------
+        # ---------------- transformer blocks ----------------
         for index_block, block in enumerate(self.base_model.transformer_blocks):
             is_skip = skip_layers is not None and index_block in skip_layers
+
+            is_profile_layer = (
+                profile_time
+                and profile_target_layers is not None
+                and index_block in profile_target_layers
+            )
+
             if output_text_inputs and not is_skip:
                 txt_input_states_list.append(encoder_hidden_states)
 
+            # -------- residual --------
+            residual_time = 0.0
             if use_residual:
                 pre_encoder_states.append(encoder_hidden_states)
 
                 if index_block in residual_target_set:
                     tid = residual_target_to_idx[index_block]
-                    w = residual_weights[tid]
+                    origin = pre_encoder_states[residual_origin_layer]
+                    rotation = (
+                        residual_rotations[tid]
+                        if residual_rotations is not None
+                        else None
+                    )
 
-                    # pick origin state
-                    if 0 <= residual_origin_layer < len(pre_encoder_states):
-                        origin = pre_encoder_states[residual_origin_layer]
-                    else:
-                        raise ValueError(f"Invalid residual_origin_layer={residual_origin_layer}")
-
-                    if origin.shape != encoder_hidden_states.shape:
-                        raise ValueError(
-                            f"[Residual] Shape mismatch: origin={origin.shape} vs target={encoder_hidden_states.shape}"
-                        )
-
-                    # --------- 改进版 residual 应用 ---------
-                    rotation = residual_rotations[tid] if residual_rotations is not None else None
-                    if profile_time:
+                    if is_profile_layer:
                         _sync()
-                        t_residual_start = time.perf_counter()
+                        t0 = time.perf_counter()
+
                     encoder_hidden_states = self._apply_residual(
                         encoder_hidden_states,
                         origin,
-                        w,
+                        residual_weights[tid],
                         use_layernorm=residual_use_layernorm,
                         stop_grad=residual_stop_grad,
                         rotation_matrix=rotation,
                     )
-                    if profile_time:
-                        _sync()
-                        t_residual_end = time.perf_counter()
-                        _mark("residual_apply", t_residual_start, t_residual_end)
 
-            # ---------------- transformer compute ----------------
+                    if is_profile_layer:
+                        _sync()
+                        residual_time = time.perf_counter() - t0
+
+            # -------- block --------
+            if is_profile_layer:
+                _sync()
+                t1 = time.perf_counter()
+
             if torch.is_grad_enabled() and self.base_model.gradient_checkpointing and not is_skip:
-                def create_custom_forward(module, return_dict=None):
+                def create_custom_forward(module):
                     def custom_forward(*inputs):
                         return module(*inputs)
                     return custom_forward
 
-                ckpt_kwargs = {}
-                if profile_time:
-                    _sync()
-                    t_block_start = time.perf_counter()
                 encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block),
-                    hidden_states, encoder_hidden_states, temb, joint_attention_kwargs, **ckpt_kwargs
+                    hidden_states,
+                    encoder_hidden_states,
+                    temb,
+                    joint_attention_kwargs,
                 )
-                if profile_time:
-                    _sync()
-                    t_block_end = time.perf_counter()
-                    _mark("blocks", t_block_start, t_block_end)
-                    last_timestamp = t_block_end
             elif not is_skip:
-                if profile_time:
-                    _sync()
-                    t_block_start = time.perf_counter()
                 encoder_hidden_states, hidden_states = block(
                     hidden_states=hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
                     temb=temb,
                     joint_attention_kwargs=joint_attention_kwargs,
                 )
-                if profile_time:
-                    _sync()
-                    t_block_end = time.perf_counter()
-                    _mark("blocks", t_block_start, t_block_end)
-                    last_timestamp = t_block_end
+
+            if is_profile_layer:
+                _sync()
+                block_time = time.perf_counter() - t1
+                if profile_time_path is not None:
+                    _write_layer_timing(
+                        profile_time_path,
+                        layer=index_block,
+                        residual_time=residual_time,
+                        block_time=block_time,
+                    )
 
             if output_hidden_states:
                 img_hidden_states_list.append(hidden_states)
-                # if encoder_hidden_states is not None:
-                #         encoder_hidden_states.retain_grad()
                 txt_hidden_states_list.append(encoder_hidden_states)
 
-        # -------------- output unchanged --------------
+        # ---------------- output ----------------
         hidden_states = self.base_model.norm_out(hidden_states, temb)
-        if profile_time:
-            _sync()
-            t_norm = time.perf_counter()
-            _mark("norm_out", last_timestamp, t_norm)
-            last_timestamp = t_norm
         hidden_states = self.base_model.proj_out(hidden_states)
-        if profile_time:
-            _sync()
-            t_proj = time.perf_counter()
-            _mark("proj_out", last_timestamp, t_proj)
-            last_timestamp = t_proj
 
         patch_size = self.base_model.config.patch_size
-        height = height // patch_size
-        width = width // patch_size
+        height //= patch_size
+        width //= patch_size
 
         hidden_states = hidden_states.reshape(
-            shape=(hidden_states.shape[0], height, width, patch_size, patch_size, self.base_model.out_channels)
+            hidden_states.shape[0],
+            height,
+            width,
+            patch_size,
+            patch_size,
+            self.base_model.out_channels,
         )
         hidden_states = torch.einsum("nhwpqc->nchpwq", hidden_states)
         output = hidden_states.reshape(
-            (hidden_states.shape[0], self.base_model.out_channels, height * patch_size, width * patch_size)
+            hidden_states.shape[0],
+            self.base_model.out_channels,
+            height * patch_size,
+            width * patch_size,
         )
-        if profile_time:
-            _sync()
-            t_end = time.perf_counter()
-            total_time = t_end - t0
-            logger.info("[profile] forward_total(s): %.6f", total_time)
-            if profile_time_path is not None:
-                _write_timings(profile_time_path, total_time)
 
         if not return_dict:
             return {
@@ -485,9 +449,6 @@ class SD3Transformer2DModel_Residual(nn.Module):
             }
 
         return Transformer2DModelOutput(sample=output)
-
-
-
 
 
 

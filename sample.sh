@@ -23,8 +23,7 @@ RES_ORIGIN=1
 
 RES_TARGET="$(seq -s ' ' 2 21)"
 
-RES_WEIGHT="$(printf '0.025 %.0s' $(seq 2 21))"
-
+RES_WEIGHT="$(printf '0.0 %.0s' $(seq 2 21))"
 
 
 
@@ -66,8 +65,9 @@ python sample.py \
     --timestep_residual_weight_exp_alpha 0.0 \
     --residual_target_layers $RES_TARGET \
     --residual_origin_layer $RES_ORIGIN \
-    --residual_procrustes_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln_simplize_t5.pt \
     --residual_weights $RES_WEIGHT \
+    # --residual_procrustes_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln_t1-o1.pt \
+
 
     # --residual_weights_path "/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/learnable_residual/sd3_residual_weights/residual_weights_step2000_final.pth" \
 # A woman holding a Hello Kitty phone on her hands.
