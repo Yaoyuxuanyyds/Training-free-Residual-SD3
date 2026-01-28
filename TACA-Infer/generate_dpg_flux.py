@@ -37,14 +37,16 @@ def make_grid_2x2(images: List[Image.Image]) -> Image.Image:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="TACA FLUX DPG batch generator")
 
-    parser.add_argument("--prompt_dir", type=str, required=True)
+    parser.add_argument("--prompt_dir", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/benches/ELLA/dpg_bench/prompts")
     parser.add_argument("--save_dir", type=str, required=True)
-    parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--model_path", type=str,
+                        default="/inspire/hdd/project/chineseculture/yaoyuxuan-CZXS25220085/p-yaoyuxuan/REPA-SD3-1/flux/FLUX.1-dev",
+                        help="Flux模型本地路径")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--img_size", type=int, default=1024)
-    parser.add_argument("--num_inference_steps", type=int, default=30)
+    parser.add_argument("--num_inference_steps", type=int, default=50)
     parser.add_argument("--guidance_scale", type=float, default=3.5)
-    parser.add_argument("--lora_weights", type=str, default=None)
+    parser.add_argument("--lora_weights", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/TACA/TACA/flux-dev-lora-rank-64.safetensors")
     parser.add_argument("--world_size", type=int, default=1)
     parser.add_argument("--rank", type=int, default=0)
 
@@ -76,8 +78,8 @@ def main(args: argparse.Namespace) -> None:
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
     ).to(device)
-    pipe.set_progress_bar_config(disable=True)
-    pipe.eval()
+    # pipe.set_progress_bar_config(disable=True)
+    # pipe.eval()
 
     if args.lora_weights is not None:
         print(f"[LoRA] Loading weights from: {args.lora_weights}")

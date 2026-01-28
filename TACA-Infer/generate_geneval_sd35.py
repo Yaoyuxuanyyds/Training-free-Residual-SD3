@@ -24,16 +24,18 @@ def set_seed(seed: int) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="TACA SD3.5 geneval batch generator")
 
-    parser.add_argument("--metadata_file", type=str, required=True)
+    parser.add_argument("--metadata_file", type=str,
+                        default="/inspire/hdd/project/chineseculture/public/yuxuan/benches/geneval/prompts/evaluation_metadata.jsonl",
+                        help="JSONL格式的prompt元数据文件")
     parser.add_argument("--outdir", type=str, required=True)
-    parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--model_path", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/base_models/Diffusion/SD3.5-large")
     parser.add_argument("--n_samples", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--img_size", type=int, default=1024)
-    parser.add_argument("--num_inference_steps", type=int, default=30)
-    parser.add_argument("--guidance_scale", type=float, default=4.5)
-    parser.add_argument("--lora_weights", type=str, default=None)
+    parser.add_argument("--num_inference_steps", type=int, default=28)
+    parser.add_argument("--guidance_scale", type=float, default=7.0)
+    parser.add_argument("--lora_weights", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/TACA/TACA/sd35-medium-lora-rank-64.safetensors")
     parser.add_argument("--world_size", type=int, default=1)
     parser.add_argument("--rank", type=int, default=0)
 
