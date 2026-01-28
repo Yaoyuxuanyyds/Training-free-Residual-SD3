@@ -196,7 +196,6 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
         # ----------- STOP GRADIENT PART -----------
         # residual 的 2 个输入都不参与梯度
-        rotation_matrix = None
         if stop_grad:
             target_nograd = target.detach()
             origin_nograd = origin.detach()
