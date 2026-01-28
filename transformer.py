@@ -272,6 +272,9 @@ class SD3Transformer2DModel_Residual(nn.Module):
                 if profile_time_sync and hidden_states.is_cuda:
                     torch.cuda.synchronize()
 
+            def _mark(*_args, **_kwargs):
+                return None
+
             _sync()
             t0 = time.perf_counter()
         height, width = hidden_states.shape[-2:]
