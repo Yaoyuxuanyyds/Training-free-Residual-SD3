@@ -279,9 +279,24 @@ class SD3Transformer2DModel_Residual(nn.Module):
             t0 = time.perf_counter()
         height, width = hidden_states.shape[-2:]
         hidden_states = self.base_model.pos_embed(hidden_states)
+        if profile_time:
+            _sync()
+            t1 = time.perf_counter()
+            _mark("pos_embed", t0, t1)
+            last_timestamp = t1
 
         temb = self.base_model.time_text_embed(timestep, pooled_projections)
+        if profile_time:
+            _sync()
+            t2 = time.perf_counter()
+            _mark("time_text_embed", t1, t2)
+            last_timestamp = t2
         encoder_hidden_states = self.base_model.context_embedder(encoder_hidden_states)
+        if profile_time:
+            _sync()
+            t3 = time.perf_counter()
+            _mark("context_embedder", t2, t3)
+            last_timestamp = t3
         if force_txt_grad and not encoder_hidden_states.requires_grad:
             encoder_hidden_states = encoder_hidden_states.detach().requires_grad_(True)
 
@@ -372,6 +387,9 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
                     # --------- 改进版 residual 应用 ---------
                     rotation = residual_rotations[tid] if residual_rotations is not None else None
+                    if profile_time:
+                        _sync()
+                        t_residual_start = time.perf_counter()
                     encoder_hidden_states = self._apply_residual(
                         encoder_hidden_states,
                         origin,
@@ -380,6 +398,10 @@ class SD3Transformer2DModel_Residual(nn.Module):
                         stop_grad=residual_stop_grad,
                         rotation_matrix=rotation,
                     )
+                    if profile_time:
+                        _sync()
+                        t_residual_end = time.perf_counter()
+                        _mark("residual_apply", t_residual_start, t_residual_end)
 
             # ---------------- transformer compute ----------------
             if torch.is_grad_enabled() and self.base_model.gradient_checkpointing and not is_skip:
@@ -389,17 +411,33 @@ class SD3Transformer2DModel_Residual(nn.Module):
                     return custom_forward
 
                 ckpt_kwargs = {}
+                if profile_time:
+                    _sync()
+                    t_block_start = time.perf_counter()
                 encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block),
                     hidden_states, encoder_hidden_states, temb, joint_attention_kwargs, **ckpt_kwargs
                 )
+                if profile_time:
+                    _sync()
+                    t_block_end = time.perf_counter()
+                    _mark("blocks", t_block_start, t_block_end)
+                    last_timestamp = t_block_end
             elif not is_skip:
+                if profile_time:
+                    _sync()
+                    t_block_start = time.perf_counter()
                 encoder_hidden_states, hidden_states = block(
                     hidden_states=hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
                     temb=temb,
                     joint_attention_kwargs=joint_attention_kwargs,
                 )
+                if profile_time:
+                    _sync()
+                    t_block_end = time.perf_counter()
+                    _mark("blocks", t_block_start, t_block_end)
+                    last_timestamp = t_block_end
 
             if output_hidden_states:
                 img_hidden_states_list.append(hidden_states)
@@ -409,7 +447,17 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
         # -------------- output unchanged --------------
         hidden_states = self.base_model.norm_out(hidden_states, temb)
+        if profile_time:
+            _sync()
+            t_norm = time.perf_counter()
+            _mark("norm_out", last_timestamp, t_norm)
+            last_timestamp = t_norm
         hidden_states = self.base_model.proj_out(hidden_states)
+        if profile_time:
+            _sync()
+            t_proj = time.perf_counter()
+            _mark("proj_out", last_timestamp, t_proj)
+            last_timestamp = t_proj
 
         patch_size = self.base_model.config.patch_size
         height = height // patch_size
