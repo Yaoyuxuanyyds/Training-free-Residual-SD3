@@ -2,7 +2,6 @@ import argparse
 import numpy as np
 import random, os, glob
 import torch
-from torchvision.utils import save_image
 from torchvision.transforms.functional import InterpolationMode
 import torchvision.transforms as torch_transforms
 from PIL import Image
@@ -57,8 +56,14 @@ def make_grid_2x2(imgs):
     """imgs: list of 4 tensors, each (3,1024,1024)"""
     assert len(imgs) == 4
 
+    def _normalize_for_save(img: torch.Tensor) -> torch.Tensor:
+        img = img.detach().float()
+        if img.min() < 0:
+            img = img * 0.5 + 0.5
+        return img.clamp(0, 1)
+
     # 转 PIL 更简单
-    pil_imgs = [(torch.clamp(img * 0.5 + 0.5, 0, 1) * 255).permute(1, 2, 0).byte().cpu().numpy() for img in imgs]
+    pil_imgs = [(_normalize_for_save(img) * 255).permute(1, 2, 0).byte().cpu().numpy() for img in imgs]
     pil_imgs = [Image.fromarray(p) for p in pil_imgs]
 
     w, h = pil_imgs[0].size
