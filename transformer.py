@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional, Union
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.utils import is_torch_version
 from dataclasses import dataclass
+import time
 import torch
 import torch.nn as nn
 
@@ -13,6 +14,147 @@ from diffusers.utils import logging
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 
 logger = logging.get_logger(__name__)
+
+
+def compute_residual_flops(
+    batch_size: int,
+    seq_len: int,
+    hidden_dim: int,
+    num_targets: int,
+    use_layernorm: bool = True,
+    use_rotation: bool = False,
+    assume_positive_weight: bool = True,
+) -> Dict[str, int]:
+    """
+    Compute FLOPs for residual-only computation in one forward pass.
+
+    Counting rule: each add/sub/mul/div/sqrt counts as 1 FLOP.
+    The counts below are per residual application and then scaled by
+    batch_size * seq_len * num_targets.
+
+    Standardize per token (mean + std + normalize) costs:
+      mean: (D-1) adds + 1 div
+      variance: D subs + D muls + (D-1) adds + 1 div + 1 sqrt + 1 add (eps)
+      normalize: D subs + D divs
+      total adds/subs: (D-1) + (D-1) + D + D + 1 = 4D - 1
+      total muls/divs/sqrt: D (mul) + (1 div) + (1 div) + D (div) + 1 sqrt = D + D + 2 div + 1 sqrt
+      total FLOPs: 6D + 2 (div) + 1 (sqrt) - 1
+    """
+    d = hidden_dim
+
+    def _standardize_flops() -> int:
+        adds_subs = 4 * d - 1
+        muls = d
+        divs = d + 2
+        sqrt_ops = 1
+        return adds_subs + muls + divs + sqrt_ops
+
+    def _layernorm_flops() -> int:
+        # layer_norm is equivalent to standardize (no affine here)
+        return _standardize_flops()
+
+    def _rotation_flops() -> int:
+        # For each token: D outputs, each D muls + (D-1) adds
+        return d * (2 * d - 1)
+
+    def _mix_flops() -> int:
+        if assume_positive_weight:
+            # t_norm + w * o_norm
+            return 2 * d
+        # t_norm * (1 - w): 1 sub + D mul
+        return d + 1
+
+    flops_per_token = 0
+    if use_layernorm:
+        flops_per_token += 2 * _standardize_flops()  # target + origin
+        if use_rotation:
+            flops_per_token += _rotation_flops()
+        flops_per_token += _mix_flops()
+        flops_per_token += _layernorm_flops()
+        # restore original scale: mixed * std + mean
+        flops_per_token += 2 * d
+    else:
+        # target + w * origin
+        flops_per_token += 2 * d
+
+    total = batch_size * seq_len * num_targets * flops_per_token
+    return {
+        "flops_per_token": flops_per_token,
+        "total_flops": total,
+    }
+
+
+def compute_sd3_block_flops(
+    batch_size: int,
+    img_seq_len: int,
+    txt_seq_len: int,
+    hidden_dim: int,
+    mlp_ratio: int = 4,
+    include_softmax: bool = True,
+    include_layernorm: bool = True,
+) -> Dict[str, int]:
+    """
+    Compute FLOPs for one SD3 transformer block forward pass.
+
+    Assumptions (explicit for strict accounting):
+      - Joint attention over concatenated tokens (image + text).
+      - Q/K/V projections and output projection are dense (D -> D).
+      - MLP is two linear layers with width = mlp_ratio * D (no gating).
+      - FLOP rule: each add/sub/mul/div/sqrt = 1 FLOP.
+      - Softmax cost approximated as 5 FLOPs per element (exp + sum + div).
+      - LayerNorm cost uses the same standardize FLOP count as residual helper.
+    """
+    d = hidden_dim
+    s_img = img_seq_len
+    s_txt = txt_seq_len
+    s_total = s_img + s_txt
+
+    def _standardize_flops() -> int:
+        adds_subs = 4 * d - 1
+        muls = d
+        divs = d + 2
+        sqrt_ops = 1
+        return adds_subs + muls + divs + sqrt_ops
+
+    # Q, K, V projections: 3 * (2 * S * D * D)
+    qkv_flops = 3 * (2 * s_total * d * d)
+    # Attention scores: Q @ K^T: 2 * S * S * D
+    attn_score_flops = 2 * s_total * s_total * d
+    # Softmax: 5 FLOPs per score
+    softmax_flops = 5 * s_total * s_total if include_softmax else 0
+    # Attention-weighted values: 2 * S * S * D
+    attn_weight_flops = 2 * s_total * s_total * d
+    # Output projection: 2 * S * D * D
+    out_proj_flops = 2 * s_total * d * d
+
+    # MLP: two linear layers D -> rD -> D
+    mlp_hidden = mlp_ratio * d
+    mlp_flops = 2 * s_total * d * mlp_hidden + 2 * s_total * mlp_hidden * d
+
+    # LayerNorm: assume two LNs per block over all tokens
+    ln_flops = 2 * s_total * _standardize_flops() if include_layernorm else 0
+
+    total_per_batch = (
+        qkv_flops
+        + attn_score_flops
+        + softmax_flops
+        + attn_weight_flops
+        + out_proj_flops
+        + mlp_flops
+        + ln_flops
+    )
+
+    total = batch_size * total_per_batch
+    return {
+        "total_flops": total,
+        "qkv_flops": batch_size * qkv_flops,
+        "attn_score_flops": batch_size * attn_score_flops,
+        "softmax_flops": batch_size * softmax_flops,
+        "attn_weight_flops": batch_size * attn_weight_flops,
+        "out_proj_flops": batch_size * out_proj_flops,
+        "mlp_flops": batch_size * mlp_flops,
+        "layernorm_flops": batch_size * ln_flops,
+    }
 
 
 
@@ -109,14 +251,57 @@ class SD3Transformer2DModel_Residual(nn.Module):
         residual_weights: Optional[Union[List[float], torch.Tensor]] = None,
         residual_use_layernorm: bool = True,         # ⭐ 新增
         residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        profile_time: bool = False,
+        profile_time_sync: bool = True,
+        profile_time_path: Optional[str] = None,
+        profile_time_run_id: Optional[str] = None,
+        profile_time_append: bool = True,
     ) -> Union[torch.FloatTensor, Transformer2DModelOutput]:
 
         output_hidden_states = True
+        timings: Dict[str, float] = {}
+        if profile_time:
+            def _write_timings(path: str, data: Dict[str, float]):
+                mode = "a" if profile_time_append else "w"
+                run_id = profile_time_run_id or time.strftime("%Y%m%d-%H%M%S")
+                total = sum(data.values())
+                with open(path, mode, encoding="utf-8") as handle:
+                    handle.write(f"run_id={run_id}\n")
+                    for key, value in data.items():
+                        handle.write(f"{key}: {value:.6f}s\n")
+                    handle.write(f"total: {total:.6f}s\n")
+                    handle.write("\n")
+
+            def _sync():
+                if profile_time_sync and hidden_states.is_cuda:
+                    torch.cuda.synchronize()
+
+            def _mark(label: str, start: float, end: float):
+                timings[label] = timings.get(label, 0.0) + (end - start)
+
+            _sync()
+            t0 = time.perf_counter()
+            last_timestamp = t0
         height, width = hidden_states.shape[-2:]
         hidden_states = self.base_model.pos_embed(hidden_states)
+        if profile_time:
+            _sync()
+            t1 = time.perf_counter()
+            _mark("pos_embed", t0, t1)
+            last_timestamp = t1
 
         temb = self.base_model.time_text_embed(timestep, pooled_projections)
+        if profile_time:
+            _sync()
+            t2 = time.perf_counter()
+            _mark("time_text_embed", t1, t2)
+            last_timestamp = t2
         encoder_hidden_states = self.base_model.context_embedder(encoder_hidden_states)
+        if profile_time:
+            _sync()
+            t3 = time.perf_counter()
+            _mark("context_embedder", t2, t3)
+            last_timestamp = t3
         if force_txt_grad and not encoder_hidden_states.requires_grad:
             encoder_hidden_states = encoder_hidden_states.detach().requires_grad_(True)
 
@@ -138,9 +323,13 @@ class SD3Transformer2DModel_Residual(nn.Module):
         )
 
         if use_residual:
-            if isinstance(residual_weights, (list, tuple)):
-                residual_weights = torch.tensor(residual_weights, dtype=encoder_hidden_states.dtype)
-            residual_weights = residual_weights.to(encoder_hidden_states.device)
+            residual_target_to_idx = {layer: idx for idx, layer in enumerate(residual_target_layers)}
+            residual_target_set = set(residual_target_layers)
+            residual_weights = torch.as_tensor(
+                residual_weights,
+                dtype=encoder_hidden_states.dtype,
+                device=encoder_hidden_states.device,
+            )
 
             residual_rotations = None
             if residual_rotation_matrices is not None:
@@ -186,8 +375,8 @@ class SD3Transformer2DModel_Residual(nn.Module):
             if use_residual:
                 pre_encoder_states.append(encoder_hidden_states)
 
-                if index_block in residual_target_layers:
-                    tid = residual_target_layers.index(index_block)
+                if index_block in residual_target_set:
+                    tid = residual_target_to_idx[index_block]
                     w = residual_weights[tid]
 
                     # pick origin state
@@ -203,6 +392,9 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
                     # --------- 改进版 residual 应用 ---------
                     rotation = residual_rotations[tid] if residual_rotations is not None else None
+                    if profile_time:
+                        _sync()
+                        t_residual_start = time.perf_counter()
                     encoder_hidden_states = self._apply_residual(
                         encoder_hidden_states,
                         origin,
@@ -211,6 +403,10 @@ class SD3Transformer2DModel_Residual(nn.Module):
                         stop_grad=residual_stop_grad,
                         rotation_matrix=rotation,
                     )
+                    if profile_time:
+                        _sync()
+                        t_residual_end = time.perf_counter()
+                        _mark("residual_apply", t_residual_start, t_residual_end)
 
             # ---------------- transformer compute ----------------
             if torch.is_grad_enabled() and self.base_model.gradient_checkpointing and not is_skip:
@@ -220,17 +416,33 @@ class SD3Transformer2DModel_Residual(nn.Module):
                     return custom_forward
 
                 ckpt_kwargs = {}
+                if profile_time:
+                    _sync()
+                    t_block_start = time.perf_counter()
                 encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block),
                     hidden_states, encoder_hidden_states, temb, joint_attention_kwargs, **ckpt_kwargs
                 )
+                if profile_time:
+                    _sync()
+                    t_block_end = time.perf_counter()
+                    _mark("blocks", t_block_start, t_block_end)
+                    last_timestamp = t_block_end
             elif not is_skip:
+                if profile_time:
+                    _sync()
+                    t_block_start = time.perf_counter()
                 encoder_hidden_states, hidden_states = block(
                     hidden_states=hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
                     temb=temb,
                     joint_attention_kwargs=joint_attention_kwargs,
                 )
+                if profile_time:
+                    _sync()
+                    t_block_end = time.perf_counter()
+                    _mark("blocks", t_block_start, t_block_end)
+                    last_timestamp = t_block_end
 
             if output_hidden_states:
                 img_hidden_states_list.append(hidden_states)
@@ -240,7 +452,17 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
         # -------------- output unchanged --------------
         hidden_states = self.base_model.norm_out(hidden_states, temb)
+        if profile_time:
+            _sync()
+            t_norm = time.perf_counter()
+            _mark("norm_out", last_timestamp, t_norm)
+            last_timestamp = t_norm
         hidden_states = self.base_model.proj_out(hidden_states)
+        if profile_time:
+            _sync()
+            t_proj = time.perf_counter()
+            _mark("proj_out", last_timestamp, t_proj)
+            last_timestamp = t_proj
 
         patch_size = self.base_model.config.patch_size
         height = height // patch_size
@@ -253,6 +475,13 @@ class SD3Transformer2DModel_Residual(nn.Module):
         output = hidden_states.reshape(
             (hidden_states.shape[0], self.base_model.out_channels, height * patch_size, width * patch_size)
         )
+        if profile_time:
+            _sync()
+            t_unpatch = time.perf_counter()
+            _mark("unpatchify", last_timestamp, t_unpatch)
+            logger.info("[profile] timings(s): %s", timings)
+            if profile_time_path is not None:
+                _write_timings(profile_time_path, timings)
 
         if not return_dict:
             return {
