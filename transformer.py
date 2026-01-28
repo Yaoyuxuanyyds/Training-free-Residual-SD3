@@ -259,29 +259,21 @@ class SD3Transformer2DModel_Residual(nn.Module):
     ) -> Union[torch.FloatTensor, Transformer2DModelOutput]:
 
         output_hidden_states = True
-        timings: Dict[str, float] = {}
         if profile_time:
-            def _write_timings(path: str, data: Dict[str, float]):
+            def _write_timings(path: str, total_time: float):
                 mode = "a" if profile_time_append else "w"
                 run_id = profile_time_run_id or time.strftime("%Y%m%d-%H%M%S")
-                total = sum(data.values())
                 with open(path, mode, encoding="utf-8") as handle:
                     handle.write(f"run_id={run_id}\n")
-                    for key, value in data.items():
-                        handle.write(f"{key}: {value:.6f}s\n")
-                    handle.write(f"total: {total:.6f}s\n")
+                    handle.write(f"total: {total_time:.6f}s\n")
                     handle.write("\n")
 
             def _sync():
                 if profile_time_sync and hidden_states.is_cuda:
                     torch.cuda.synchronize()
 
-            def _mark(label: str, start: float, end: float):
-                timings[label] = timings.get(label, 0.0) + (end - start)
-
             _sync()
             t0 = time.perf_counter()
-            last_timestamp = t0
         height, width = hidden_states.shape[-2:]
         hidden_states = self.base_model.pos_embed(hidden_states)
         if profile_time:
@@ -477,11 +469,11 @@ class SD3Transformer2DModel_Residual(nn.Module):
         )
         if profile_time:
             _sync()
-            t_unpatch = time.perf_counter()
-            _mark("unpatchify", last_timestamp, t_unpatch)
-            logger.info("[profile] timings(s): %s", timings)
+            t_end = time.perf_counter()
+            total_time = t_end - t0
+            logger.info("[profile] forward_total(s): %.6f", total_time)
             if profile_time_path is not None:
-                _write_timings(profile_time_path, timings)
+                _write_timings(profile_time_path, total_time)
 
         if not return_dict:
             return {
