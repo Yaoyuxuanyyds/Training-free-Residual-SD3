@@ -7,7 +7,12 @@ import torchvision.transforms as torch_transforms
 from PIL import Image
 
 from sampler import SD3Euler, build_timestep_residual_weight_fn
-from util import load_residual_procrustes, select_residual_rotations, load_residual_weights
+from util import (
+    load_residual_procrustes,
+    load_residual_weights,
+    resolve_origin_layers,
+    select_residual_rotations,
+)
 from lora_utils import *
 
 INTERPOLATIONS = {
@@ -108,6 +113,7 @@ if __name__ == "__main__":
     # residual
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
+    parser.add_argument("--residual_origin_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
@@ -129,6 +135,15 @@ if __name__ == "__main__":
         type=float,
         default=1.5,
         help="Exponent alpha for exponential timestep residual weight mapping.",
+    )
+    parser.add_argument(
+        "--timestep_stage",
+        "--timestep-stage",
+        dest="timestep_stage",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3],
+        help="Residual active timestep stage: 0=all, 1=0-333, 2=334-666, 3=667-1000.",
     )
     # 多 GPU 分片参数
     parser.add_argument(
@@ -184,9 +199,19 @@ if __name__ == "__main__":
         residual_rotation_matrices, args.residual_target_layers = select_residual_rotations(
             residual_rotation_matrices, target_layers, args.residual_target_layers
         )
-        if args.residual_origin_layer is None and isinstance(meta, dict):
-            args.residual_origin_layer = meta.get("origin_layer")
         residual_rotation_meta = meta
+
+    args.residual_origin_layers = resolve_origin_layers(
+        origin_layer=args.residual_origin_layer,
+        origin_layers=args.residual_origin_layers,
+        meta=residual_rotation_meta,
+    )
+    args.residual_origin_layer = (
+        args.residual_origin_layers[0]
+        if args.residual_origin_layers is not None and len(args.residual_origin_layers) == 1
+        else None
+    )
+    use_residual = args.residual_origin_layers is not None
 
     if args.residual_weights is None and args.residual_weights_path is not None:
         args.residual_weights = load_residual_weights(args.residual_weights_path)
@@ -231,7 +256,7 @@ if __name__ == "__main__":
         prompts = [prompt] * 4
 
         with torch.inference_mode():
-            if args.residual_origin_layer is None:
+            if not use_residual:
                 imgs = sampler.sample(
                     prompts,
                     NFE=args.NFE,
@@ -248,6 +273,7 @@ if __name__ == "__main__":
                     batch_size=4,
                     residual_target_layers=args.residual_target_layers,
                     residual_origin_layer=args.residual_origin_layer,
+                    residual_origin_layers=args.residual_origin_layers,
                     residual_weights=args.residual_weights,
                     residual_use_layernorm=args.residual_use_layernorm,
                     residual_rotation_matrices=residual_rotation_matrices,
@@ -257,6 +283,7 @@ if __name__ == "__main__":
                         power=args.timestep_residual_weight_power,
                         exp_alpha=args.timestep_residual_weight_exp_alpha,
                     ),
+                    residual_timestep_stage=args.timestep_stage,
                 )
 
         # imgs shape: [4, 3, 1024, 1024]

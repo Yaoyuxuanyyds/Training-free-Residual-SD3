@@ -84,23 +84,26 @@ class FluxTransformer2DModel_RES(nn.Module):
             target_nograd = target
             origin_nograd = origin
 
-        target_norm, target_mean, target_std = self._standardize_tokenwise(target_nograd)
-        origin_norm, _, _ = self._standardize_tokenwise(origin_nograd)
-
-        if rotation_matrix is not None:
-            origin_norm = torch.matmul(origin_norm, rotation_matrix)
-
-        if w >= 0:
-            mixed = target_norm + w * origin_norm
-        else:
-            mixed = target_norm * (1 - w)
-
         if use_layernorm:
+            target_norm, target_mean, target_std = self._standardize_tokenwise(target_nograd)
+            origin_norm, _, _ = self._standardize_tokenwise(origin_nograd)
+
+            if rotation_matrix is not None:
+                origin_norm = torch.matmul(origin_norm, rotation_matrix)
+
+            if w >= 0:
+                mixed = target_norm + w * origin_norm
+            else:
+                mixed = target_norm * (1 - w)
+
             mixed = torch.nn.functional.layer_norm(
                 mixed, normalized_shape=(mixed.shape[-1],), eps=1e-6
             )
+            return mixed * target_std + target_mean
 
-        return mixed * target_std + target_mean
+        if rotation_matrix is not None:
+            origin_nograd = torch.matmul(origin_nograd, rotation_matrix)
+        return target_nograd + w * origin_nograd
 
     def forward(
         self,

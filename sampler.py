@@ -7,7 +7,7 @@ from transformer import SD3Transformer2DModel_Vanilla, SD3Transformer2DModel_REP
 from torch.nn.parallel import DistributedDataParallel
 from torch import nn
 from torch.amp import autocast
-from util import set_seed, resolve_rotation_bucket
+from util import resolve_origin_layers, resolve_rotation_bucket, set_seed
 
 from typing import Callable, Optional
 import torch
@@ -289,6 +289,7 @@ class StableDiffusion3Base():
         self, z, t, prompt_emb, pooled_emb,
         residual_target_layers: Optional[List[int]] = None,
         residual_origin_layer: Optional[int] = None,
+        residual_origin_layers: Optional[List[int]] = None,
         residual_weights: Optional[List[float]] = None,
         residual_use_layernorm: bool = True,    # ⭐ 新增
         residual_rotation_matrices: Optional[torch.Tensor] = None,
@@ -302,6 +303,7 @@ class StableDiffusion3Base():
                 return_dict=False,
                 residual_target_layers=residual_target_layers,
                 residual_origin_layer=residual_origin_layer,
+                residual_origin_layers=residual_origin_layers,
                 residual_weights=residual_weights,
                 residual_use_layernorm=residual_use_layernorm,   # ⭐ Forward 参数传递
                 residual_rotation_matrices=residual_rotation_matrices,
@@ -312,6 +314,27 @@ class StableDiffusion3Base():
 class SD3Euler(StableDiffusion3Base):
     def __init__(self, model_key='/inspire/hdd/project/chineseculture/public/yuxuan/base_models/Diffusion/sd3', device='cuda', use_8bit=False, load_ckpt_path=None, load_transformer_only: bool = False):
         super().__init__(model_key=model_key, device=device, use_8bit=use_8bit, load_ckpt_path=load_ckpt_path, load_transformer_only=load_transformer_only)
+
+    @staticmethod
+    def _is_residual_stage_active(
+        timestep: torch.Tensor,
+        residual_timestep_stage: int,
+    ) -> bool:
+        if residual_timestep_stage == 0:
+            return True
+
+        timestep_value = float(timestep.reshape(-1)[0].item())
+
+        if residual_timestep_stage == 1:
+            return 0.0 <= timestep_value <= 333.0
+        if residual_timestep_stage == 2:
+            return 334.0 <= timestep_value <= 666.0
+        if residual_timestep_stage == 3:
+            return 667.0 <= timestep_value <= 1000.0
+
+        raise ValueError(
+            f"Unsupported residual_timestep_stage={residual_timestep_stage}. Expected one of [0, 1, 2, 3]."
+        )
 
     @staticmethod
     def _resolve_timestep_residual_weight(
@@ -411,11 +434,13 @@ class SD3Euler(StableDiffusion3Base):
 
         residual_target_layers: Optional[List[int]] = None,
         residual_origin_layer: Optional[int] = None,
+        residual_origin_layers: Optional[List[int]] = None,
         residual_weights: Optional[List[float]] = None,
         residual_use_layernorm: bool = True,  # ⭐ 新增
         residual_rotation_matrices: Optional[torch.Tensor] = None,
         residual_rotation_meta: Optional[dict] = None,
         residual_timestep_weight_fn: Optional[Callable[[torch.Tensor, int], torch.Tensor]] = None,
+        residual_timestep_stage: int = 0,
     ):
         imgH, imgW = img_shape if img_shape is not None else (1024, 1024)
         with torch.no_grad():
@@ -426,6 +451,15 @@ class SD3Euler(StableDiffusion3Base):
         self.scheduler.set_timesteps(NFE, device=self.device)
         timesteps = self.scheduler.timesteps
         steps = timesteps / self.scheduler.config.num_train_timesteps
+        resolved_origin_layers = resolve_origin_layers(
+            origin_layer=residual_origin_layer,
+            origin_layers=residual_origin_layers,
+        )
+        resolved_origin_layer = (
+            resolved_origin_layers[0]
+            if resolved_origin_layers is not None and len(resolved_origin_layers) == 1
+            else None
+        )
         weight_fn = None
         if residual_weights is not None:
             weight_fn = residual_timestep_weight_fn or build_timestep_residual_weight_fn()
@@ -433,27 +467,37 @@ class SD3Euler(StableDiffusion3Base):
         pbar = tqdm(timesteps, total=NFE, desc='SD3 Euler')
         for i, t in enumerate(pbar):
             timestep = t.expand(z.shape[0]).to(self.device)
-            timestep_weight = self._resolve_timestep_residual_weight(
+            stage_active = self._is_residual_stage_active(
                 timestep,
-                self.scheduler.config.num_train_timesteps,
-                weight_fn,
+                residual_timestep_stage,
             )
-            effective_residual_weights = self._scale_residual_weights(
-                residual_weights,
-                timestep_weight,
-                device=self.device_diff,
-                dtype=self.dtype,
-            )
-            selected_rotations = resolve_rotation_bucket(
-                residual_rotation_matrices,
-                residual_rotation_meta,
-                timestep,
-            )
+
+            if stage_active:
+                timestep_weight = self._resolve_timestep_residual_weight(
+                    timestep,
+                    self.scheduler.config.num_train_timesteps,
+                    weight_fn,
+                )
+                effective_residual_weights = self._scale_residual_weights(
+                    residual_weights,
+                    timestep_weight,
+                    device=self.device_diff,
+                    dtype=self.dtype,
+                )
+                selected_rotations = resolve_rotation_bucket(
+                    residual_rotation_matrices,
+                    residual_rotation_meta,
+                    timestep,
+                )
+            else:
+                effective_residual_weights = None
+                selected_rotations = None
 
             pred_v = self.predict_vector_residual(
                 z, timestep, prompt_emb, pooled_emb,
                 residual_target_layers=residual_target_layers,
-                residual_origin_layer=residual_origin_layer,
+                residual_origin_layer=resolved_origin_layer,
+                residual_origin_layers=resolved_origin_layers,
                 residual_weights=effective_residual_weights,
                 residual_use_layernorm=residual_use_layernorm,  # ⭐ 传递
                 residual_rotation_matrices=selected_rotations,
@@ -463,7 +507,8 @@ class SD3Euler(StableDiffusion3Base):
                 self.predict_vector_residual(
                     z, timestep, null_prompt_emb, null_pooled_emb,
                     residual_target_layers=residual_target_layers,
-                    residual_origin_layer=residual_origin_layer,
+                    residual_origin_layer=resolved_origin_layer,
+                    residual_origin_layers=resolved_origin_layers,
                     residual_weights=effective_residual_weights,
                     residual_use_layernorm=residual_use_layernorm,  # ⭐ 传递
                     residual_rotation_matrices=selected_rotations,

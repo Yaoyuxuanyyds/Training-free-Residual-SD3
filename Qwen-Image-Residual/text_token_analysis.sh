@@ -15,19 +15,21 @@ set -euo pipefail
 # =============== 阶段 0：环境 ===============
 source /inspire/hdd/project/chineseculture/public/yuxuan/miniconda3/etc/profile.d/conda.sh
 conda activate qwen-image
-cd /inspire/hdd/project/chineseculture/public/yuxuan/Qwen-Image-Residual
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 
 python text_token_analysis.py \
     --model "/inspire/hdd/project/chineseculture/public/yuxuan/base_models/Diffusion/Qwen-Image" \
     --dataset blip3o \
     --datadir /inspire/hdd/project/chineseculture/public/yuxuan/datasets\
-    --num-samples 10 \
-    --timestep-idx 25 \
+    --num-samples 1 \
+    --timestep-idx 100 \
     --vis-sample-size 100000 \
     --output-dir /inspire/hdd/project/chineseculture/public/yuxuan/Qwen-Image-Residual/output/vis/base_t25_normalize_LN \
     --dataset-train \
     --normalize-layers \
+    --token-report-count 10 \
     
 
 

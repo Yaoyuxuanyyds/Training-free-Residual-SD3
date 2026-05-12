@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import time
 import torch
 import torch.nn as nn
+from util import resolve_origin_layers
 
     
 import torch
@@ -224,6 +225,8 @@ class SD3Transformer2DModel_Residual(nn.Module):
             # --- restore original scale ---
             return mixed * t_std + t_mean
         else:
+            if rotation_matrix is not None:
+                origin_nograd = torch.matmul(origin_nograd, rotation_matrix)
             return target_nograd + w * origin_nograd
 
 
@@ -246,6 +249,7 @@ class SD3Transformer2DModel_Residual(nn.Module):
         # --- residual 参数 ---
         residual_target_layers: Optional[List[int]] = None,
         residual_origin_layer: Optional[int] = None,
+        residual_origin_layers: Optional[List[int]] = None,
         residual_weights: Optional[Union[List[float], torch.Tensor]] = None,
         residual_use_layernorm: bool = True,
         residual_rotation_matrices: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
@@ -298,8 +302,12 @@ class SD3Transformer2DModel_Residual(nn.Module):
         txt_hidden_states_list.append(encoder_hidden_states)
 
         # ---------------- residual config ----------------
+        resolved_origin_layers = resolve_origin_layers(
+            origin_layer=residual_origin_layer,
+            origin_layers=residual_origin_layers,
+        )
         use_residual = (
-            residual_origin_layer is not None
+            resolved_origin_layers is not None
             and residual_target_layers is not None
             and residual_weights is not None
         )
@@ -349,7 +357,23 @@ class SD3Transformer2DModel_Residual(nn.Module):
 
                 if index_block in residual_target_set:
                     tid = residual_target_to_idx[index_block]
-                    origin = pre_encoder_states[residual_origin_layer]
+                    unavailable_layers = [
+                        layer for layer in resolved_origin_layers
+                        if layer < 0 or layer >= len(pre_encoder_states)
+                    ]
+                    if unavailable_layers:
+                        raise ValueError(
+                            "Invalid residual origin layer(s) for current block "
+                            f"{index_block}: {unavailable_layers}"
+                        )
+
+                    if len(resolved_origin_layers) == 1:
+                        origin = pre_encoder_states[resolved_origin_layers[0]]
+                    else:
+                        origin = torch.stack(
+                            [pre_encoder_states[layer] for layer in resolved_origin_layers],
+                            dim=0,
+                        ).mean(dim=0)
                     rotation = (
                         residual_rotations[tid]
                         if residual_rotations is not None

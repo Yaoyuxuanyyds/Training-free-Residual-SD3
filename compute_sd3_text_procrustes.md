@@ -21,10 +21,12 @@ This document describes the implementation of the **LN + Rescale + Orthogonal Pr
 The script saves a `.pt` file with:
 ```python
 {
-  "origin_layer": int,
+  "origin_layers": List[int],
+  "origin_layer": Optional[int],  # kept when only one origin layer is used
   "target_layers": List[int],
   "rotation_matrices": Tensor[num_layers, d, d],
   "feature_dim": int,
+  "residual_use_layernorm": bool,
   "num_samples": int,
   "num_valid_tokens": int,
   "timestep_idx": int,
@@ -39,10 +41,14 @@ python compute_sd3_text_procrustes.py \
   --dataset coco \
   --datadir /path/to/datasets \
   --num-samples 200 \
-  --origin-layer 0 \
-  --target-layer-start 2 \
+  --origin-layers 1 2 3 \
+  --target-layer-start 4 \
+  --residual_use_layernorm 1 \
   --output procrustes_rotations.pt
 ```
+
+`--residual_use_layernorm 1` means the script applies `apply_simulated_ln(...)` before Procrustes,
+while `0` uses raw text features directly.
 
 ## 2. Runtime inference changes
 
@@ -64,15 +70,15 @@ The residual path now supports an optional **rotation matrix** per target layer:
 - In the sampling scripts, you can provide `--residual_procrustes_path` to load the saved matrices.
   - If `--residual_target_layers` is not specified, the script will use `target_layers`
     from the saved file automatically.
-  - If `--residual_origin_layer` is not specified, it will default to `origin_layer`
-    from the saved file.
+  - If neither `--residual_origin_layer` nor `--residual_origin_layers` is specified,
+    the script will default to `origin_layers` (or legacy `origin_layer`) from the saved file.
 
 ### Example usage at inference
 ```bash
 python sample.py \
   --prompt "a watercolor cat in a garden" \
   --save_dir ./outputs \
-  --residual_origin_layer 0 \
+  --residual_origin_layers 1 2 3 \
   --residual_weights 0.5 \
   --residual_procrustes_path procrustes_rotations.pt
 ```

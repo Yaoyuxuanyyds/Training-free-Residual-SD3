@@ -150,6 +150,14 @@ def _build_bucket_edges(num_train_timesteps: int, num_buckets: int) -> List[int]
     return edges
 
 
+def prepare_feature_tokens(x: torch.Tensor, use_layernorm: bool) -> torch.Tensor:
+    if not use_layernorm:
+        return x
+    mu = x.mean(dim=-1, keepdim=True)
+    st = x.std(dim=-1, keepdim=True) + 1e-6
+    return (x - mu) / st
+
+
 def vae_latent_to_flux_tokens(z):
     """
     z: [B, 16, 128, 128]
@@ -306,11 +314,12 @@ def run(args: argparse.Namespace):
                 origin_state = origin_state[token_mask.cpu()]
             if origin_state.numel() == 0:
                 continue
-            mu = origin_state.mean(dim=-1, keepdim=True)
-            st = origin_state.std(dim=-1, keepdim=True) + 1e-6
-            origin_ln = (origin_state - mu) / st
+            origin_features = prepare_feature_tokens(
+                origin_state,
+                use_layernorm=args.residual_use_layernorm,
+            )
             if feature_dim is None:
-                feature_dim = origin_ln.shape[1]
+                feature_dim = origin_features.shape[1]
             if origin_sums[bucket_idx] is None:
                 origin_sums[bucket_idx] = torch.zeros(feature_dim, dtype=torch.float32)
                 origin_sumsq[bucket_idx] = torch.tensor(0.0, dtype=torch.float32)
@@ -321,9 +330,9 @@ def run(args: argparse.Namespace):
                         (feature_dim, feature_dim), dtype=torch.float32
                     )
 
-            origin_counts[bucket_idx] += origin_ln.shape[0]
-            origin_sums[bucket_idx] += origin_ln.sum(dim=0)
-            origin_sumsq[bucket_idx] += origin_ln.pow(2).sum()
+            origin_counts[bucket_idx] += origin_features.shape[0]
+            origin_sums[bucket_idx] += origin_features.sum(dim=0)
+            origin_sumsq[bucket_idx] += origin_features.pow(2).sum()
 
             for layer in target_layers:
                 target_state = txt_input_states[layer][0].float().cpu()
@@ -331,14 +340,15 @@ def run(args: argparse.Namespace):
                     target_state = target_state[token_mask.cpu()]
                 if target_state.numel() == 0:
                     continue
-                mu = target_state.mean(dim=-1, keepdim=True)
-                st = target_state.std(dim=-1, keepdim=True) + 1e-6
-                target_ln = (target_state - mu) / st
+                target_features = prepare_feature_tokens(
+                    target_state,
+                    use_layernorm=args.residual_use_layernorm,
+                )
 
-                layer_counts[layer][bucket_idx] += target_ln.shape[0]
-                layer_sums[layer][bucket_idx] += target_ln.sum(dim=0)
-                layer_sumsq[layer][bucket_idx] += target_ln.pow(2).sum()
-                layer_cross[layer][bucket_idx] += origin_ln.t().matmul(target_ln)
+                layer_counts[layer][bucket_idx] += target_features.shape[0]
+                layer_sums[layer][bucket_idx] += target_features.sum(dim=0)
+                layer_sumsq[layer][bucket_idx] += target_features.pow(2).sum()
+                layer_cross[layer][bucket_idx] += origin_features.t().matmul(target_features)
 
             del outputs, txt_input_states, z_t, t_tensor
 
@@ -404,7 +414,16 @@ def run(args: argparse.Namespace):
         "rotation_matrices": rotation_stack,
         "feature_dim": feature_dim,
         "num_valid_tokens": num_valid_tokens_payload,
-        "strategy": "row_ln_then_col_center" if args.col_center else "row_ln",
+        "strategy": (
+            "row_ln_then_col_center"
+            if args.residual_use_layernorm and args.col_center
+            else "row_ln"
+            if args.residual_use_layernorm
+            else "raw_then_col_center"
+            if args.col_center
+            else "raw"
+        ),
+        "residual_use_layernorm": args.residual_use_layernorm,
         "column_center": args.col_center,
         "timestep_buckets": num_buckets,
         "timestep_bucket_edges": bucket_edges,
@@ -431,6 +450,7 @@ def main():
     parser.add_argument("--target-layer-start", type=int, default=2)
     parser.add_argument("--target-layers", type=int, nargs="+", default=None)
     parser.add_argument("--no-padding-mask", action="store_false", dest="use_padding_mask", default=True)
+    parser.add_argument("--residual_use_layernorm", type=int, default=1)
 
     parser.add_argument("--height", type=int, default=1024)
     parser.add_argument("--width", type=int, default=1024)
@@ -443,6 +463,7 @@ def main():
     parser.add_argument("--output", type=str, default="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/Flux-Residual/logs/procrustes_rotations/procrustes_rotations_coco5k_ln_t1.pt")
 
     args = parser.parse_args()
+    args.residual_use_layernorm = bool(args.residual_use_layernorm)
     run(args)
 
 

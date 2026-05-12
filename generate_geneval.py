@@ -11,7 +11,13 @@ from einops import rearrange
 from torchvision.utils import save_image
 
 from sampler import SD3Euler, build_timestep_residual_weight_fn
-from util import load_residual_procrustes, select_residual_rotations, set_seed, load_residual_weights
+from util import (
+    load_residual_procrustes,
+    load_residual_weights,
+    resolve_origin_layers,
+    select_residual_rotations,
+    set_seed,
+)
 from lora_utils import *
 
 torch.set_grad_enabled(False)
@@ -27,11 +33,13 @@ class SD3ImageGenerator:
         load_dir=None,
         residual_target_layers=None,
         residual_origin_layer=None,
+        residual_origin_layers=None,
         residual_weights=None,
         residual_use_layernorm: bool = True,
         residual_rotation_matrices=None,
         residual_rotation_meta=None,
         residual_timestep_weight_fn=None,
+        residual_timestep_stage: int = 0,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -43,12 +51,21 @@ class SD3ImageGenerator:
 
         # 保存 residual 参数
         self.residual_target_layers = residual_target_layers
-        self.residual_origin_layer = residual_origin_layer
+        self.residual_origin_layers = resolve_origin_layers(
+            origin_layer=residual_origin_layer,
+            origin_layers=residual_origin_layers,
+        )
+        self.residual_origin_layer = (
+            self.residual_origin_layers[0]
+            if self.residual_origin_layers is not None and len(self.residual_origin_layers) == 1
+            else None
+        )
         self.residual_weights = residual_weights
         self.residual_use_layernorm = residual_use_layernorm
         self.residual_rotation_matrices = residual_rotation_matrices
         self.residual_rotation_meta = residual_rotation_meta
         self.residual_timestep_weight_fn = residual_timestep_weight_fn
+        self.residual_timestep_stage = residual_timestep_stage
 
 
     def generate_image(
@@ -60,15 +77,22 @@ class SD3ImageGenerator:
         guidance_scale=7.0,
         residual_target_layers=None,
         residual_origin_layer=None,
+        residual_origin_layers=None,
         residual_weights=None,
         residual_use_layernorm: bool = True,
         residual_rotation_matrices=None,
         residual_rotation_meta=None,
         residual_timestep_weight_fn=None,
+        residual_timestep_stage: int = None,
     ):
         # 优先级：函数参数 > 初始化参数
         rt = residual_target_layers if residual_target_layers is not None else self.residual_target_layers
-        ro = residual_origin_layer if residual_origin_layer is not None else self.residual_origin_layer
+        ro_layers = resolve_origin_layers(
+            origin_layer=residual_origin_layer,
+            origin_layers=residual_origin_layers,
+        )
+        if ro_layers is None:
+            ro_layers = self.residual_origin_layers
         rw = residual_weights if residual_weights is not None else self.residual_weights
         rln = residual_use_layernorm if residual_use_layernorm is not None else self.residual_use_layernorm
         rr = residual_rotation_matrices if residual_rotation_matrices is not None else self.residual_rotation_matrices
@@ -82,12 +106,17 @@ class SD3ImageGenerator:
             if residual_timestep_weight_fn is not None
             else self.residual_timestep_weight_fn
         )
+        rts = (
+            residual_timestep_stage
+            if residual_timestep_stage is not None
+            else self.residual_timestep_stage
+        )
 
         set_seed(seed)
         prompts = [prompt]
 
         with torch.inference_mode(), torch.cuda.amp.autocast(dtype=torch.float16):
-            if ro is None:
+            if ro_layers is None:
                 img = self.sampler.sample(
                     prompts,
                     NFE=num_inference_steps,
@@ -103,12 +132,14 @@ class SD3ImageGenerator:
                     cfg_scale=guidance_scale,
                     batch_size=1,
                     residual_target_layers=rt,
-                    residual_origin_layer=ro,
+                    residual_origin_layer=ro_layers[0] if len(ro_layers) == 1 else None,
+                    residual_origin_layers=ro_layers,
                     residual_weights=rw,
                     residual_use_layernorm=rln,
                     residual_rotation_matrices=rr,
                     residual_rotation_meta=rr_meta,
                     residual_timestep_weight_fn=rtw,
+                    residual_timestep_stage=rts,
                 )
         return img
 
@@ -138,6 +169,7 @@ def parse_args():
     # residual
     parser.add_argument("--residual_target_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_origin_layer", type=int, default=None)
+    parser.add_argument("--residual_origin_layers", type=int, nargs="+", default=None)
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
@@ -159,6 +191,15 @@ def parse_args():
         type=float,
         default=1.5,
         help="Exponent alpha for exponential timestep residual weight mapping.",
+    )
+    parser.add_argument(
+        "--timestep_stage",
+        "--timestep-stage",
+        dest="timestep_stage",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3],
+        help="Residual active timestep stage: 0=all, 1=0-333, 2=334-666, 3=667-1000.",
     )
 
     # ---------- LoRA 采样支持 ---------- #
@@ -211,9 +252,18 @@ def main(args):
         residual_rotation_matrices, args.residual_target_layers = select_residual_rotations(
             residual_rotation_matrices, target_layers, args.residual_target_layers
         )
-        if args.residual_origin_layer is None and isinstance(meta, dict):
-            args.residual_origin_layer = meta.get("origin_layer")
         residual_rotation_meta = meta
+
+    args.residual_origin_layers = resolve_origin_layers(
+        origin_layer=args.residual_origin_layer,
+        origin_layers=args.residual_origin_layers,
+        meta=residual_rotation_meta,
+    )
+    args.residual_origin_layer = (
+        args.residual_origin_layers[0]
+        if args.residual_origin_layers is not None and len(args.residual_origin_layers) == 1
+        else None
+    )
 
     if args.residual_weights is None and args.residual_weights_path is not None:
         args.residual_weights = load_residual_weights(args.residual_weights_path)
@@ -223,6 +273,7 @@ def main(args):
         load_dir=None,
         residual_target_layers=args.residual_target_layers,
         residual_origin_layer=args.residual_origin_layer,
+        residual_origin_layers=args.residual_origin_layers,
         residual_weights=args.residual_weights,
         residual_use_layernorm=args.residual_use_layernorm,
         residual_rotation_matrices=residual_rotation_matrices,
@@ -232,6 +283,7 @@ def main(args):
             power=args.timestep_residual_weight_power,
             exp_alpha=args.timestep_residual_weight_exp_alpha,
         ),
+        residual_timestep_stage=args.timestep_stage,
     )
 
     # ---------- 如果提供了 LoRA ckpt，注入 + 加载 ----------
@@ -293,10 +345,12 @@ def main(args):
                         num_inference_steps=args.nfe,
                         residual_target_layers=args.residual_target_layers,
                         residual_origin_layer=args.residual_origin_layer,
+                        residual_origin_layers=args.residual_origin_layers,
                         residual_weights=args.residual_weights,
                         residual_use_layernorm=args.residual_use_layernorm,
                         residual_rotation_matrices=residual_rotation_matrices,
                         residual_timestep_weight_fn=generator.residual_timestep_weight_fn,
+                        residual_timestep_stage=args.timestep_stage,
                     )
 
                     # ====== 新增：统一成 [C, H, W] ======

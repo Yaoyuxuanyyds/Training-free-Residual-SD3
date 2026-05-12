@@ -20,6 +20,7 @@ SAVEDIR="/inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residua
 ### -----------------------------
 # 支持任意 residual 参组合
 RES_ORIGIN=1
+RES_USE_LAYERNORM=1
 
 RES_TARGET="$(seq -s ' ' 2 21)"
 
@@ -65,6 +66,7 @@ python sample.py \
     --timestep_residual_weight_exp_alpha 0.0 \
     --residual_target_layers $RES_TARGET \
     --residual_origin_layer $RES_ORIGIN \
+    --residual_use_layernorm $RES_USE_LAYERNORM \
     --residual_weights $RES_WEIGHT \
     # --residual_procrustes_path /inspire/hdd/project/chineseculture/public/yuxuan/Training-free-Residual-SD3/logs/procrustes_rotations/procrustes_rotations_coco5k_ln_t1-o1.pt \
 

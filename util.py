@@ -1,5 +1,5 @@
 import random
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 import torch
@@ -40,6 +40,54 @@ def get_qwen_transform(size=512):
         pil_to_tensor_255,
     ])
     return transform
+
+
+def normalize_layer_list(
+    layer: Optional[int] = None,
+    layers: Optional[Sequence[int]] = None,
+) -> Optional[list[int]]:
+    resolved: list[int] = []
+    seen: set[int] = set()
+
+    def _append(value) -> None:
+        if value is None:
+            return
+        value = int(value)
+        if value not in seen:
+            seen.add(value)
+            resolved.append(value)
+
+    if layers is not None:
+        if torch.is_tensor(layers):
+            layers = layers.detach().cpu().tolist()
+        elif isinstance(layers, np.ndarray):
+            layers = layers.tolist()
+        elif isinstance(layers, (int, float)):
+            layers = [int(layers)]
+        else:
+            layers = list(layers)
+
+        for value in layers:
+            _append(value)
+
+    _append(layer)
+    return resolved or None
+
+
+def resolve_origin_layers(
+    origin_layer: Optional[int] = None,
+    origin_layers: Optional[Sequence[int]] = None,
+    meta: Optional[dict] = None,
+) -> Optional[list[int]]:
+    if origin_layers is not None:
+        return normalize_layer_list(layers=origin_layers)
+    if origin_layer is not None:
+        return normalize_layer_list(layer=origin_layer)
+    if not isinstance(meta, dict):
+        return None
+    if meta.get("origin_layers") is not None:
+        return normalize_layer_list(layers=meta.get("origin_layers"))
+    return normalize_layer_list(layer=meta.get("origin_layer"))
 
 
 def load_residual_procrustes(

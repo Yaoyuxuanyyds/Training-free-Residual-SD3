@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from dataset.datasets import get_target_dataset
 from sampler import StableDiffusion3Base
+from util import resolve_origin_layers
 
 
 def load_and_resize_pil(image_source, height: int, width: int) -> Image.Image:
@@ -207,10 +208,25 @@ def run(args: argparse.Namespace):
         denoiser_base.gradient_checkpointing = False
 
     num_layers = len(denoiser_base.transformer_blocks)
+    origin_layers = resolve_origin_layers(
+        origin_layer=args.origin_layer,
+        origin_layers=args.origin_layers,
+    )
+    if origin_layers is None:
+        origin_layers = [1]
+    invalid_origin_layers = [
+        layer for layer in origin_layers if layer < 0 or layer >= num_layers
+    ]
+    if invalid_origin_layers:
+        raise ValueError(
+            f"Invalid origin layer(s): {invalid_origin_layers}. Valid range is [0, {num_layers - 1}]."
+        )
+
     if args.target_layers:
         target_layers = sorted(set(args.target_layers))
     else:
-        target_layers = list(range(args.target_layer_start, num_layers))
+        target_layer_start = max(args.target_layer_start, max(origin_layers) + 1)
+        target_layers = list(range(target_layer_start, num_layers))
     
     if not target_layers:
         raise ValueError("No target layers specified for Procrustes computation.")
@@ -274,7 +290,10 @@ def run(args: argparse.Namespace):
             txt_input_states = outputs.get("txt_input_states")
 
             # 提取并掩码 Origin Layer
-            origin_state = txt_input_states[args.origin_layer][0].float().cpu()
+            origin_state = torch.stack(
+                [txt_input_states[layer][0].float().cpu() for layer in origin_layers],
+                dim=0,
+            ).mean(dim=0)
             if token_mask is not None:
                 origin_state = origin_state[token_mask.cpu()]
             origin_chunks[bucket_idx].append(origin_state)
@@ -286,7 +305,7 @@ def run(args: argparse.Namespace):
                     target_state = target_state[token_mask.cpu()]
                 target_chunks[layer][bucket_idx].append(target_state)
 
-    # --- 阶段 2: 模拟推理分布（行归一化） ---
+    # --- 阶段 2: 可选模拟推理分布（行归一化） ---
     def apply_simulated_ln(chunks_list: List[torch.Tensor]) -> torch.Tensor:
         processed = []
         for x in chunks_list:
@@ -298,14 +317,25 @@ def run(args: argparse.Namespace):
             processed.append((x - mu) / st)
         return torch.cat(processed, dim=0)
 
-    print("[PROCESS] Applying Row-wise LN and optional Column-wise Centering...")
+    def prepare_feature_chunks(chunks_list: List[torch.Tensor]) -> torch.Tensor:
+        if args.residual_use_layernorm:
+            return apply_simulated_ln(chunks_list)
+        processed = [x for x in chunks_list if x.shape[0] > 0]
+        return torch.cat(processed, dim=0)
+
+    preprocess_desc = (
+        "Row-wise LN + optional Column-wise Centering"
+        if args.residual_use_layernorm
+        else "Raw features + optional Column-wise Centering"
+    )
+    print(f"[PROCESS] Applying {preprocess_desc}...")
 
     rotations_by_bucket: List[torch.Tensor] = []
     num_valid_tokens: List[int] = []
 
     # --- 阶段 3: 计算各层的正交旋转矩阵 ---
     for bucket_idx in range(num_buckets):
-        X_ln = apply_simulated_ln(origin_chunks[bucket_idx])
+        X_ln = prepare_feature_chunks(origin_chunks[bucket_idx])
         X_final = (
             X_ln - X_ln.mean(dim=0, keepdim=True)
             if args.col_center
@@ -315,7 +345,7 @@ def run(args: argparse.Namespace):
 
         rotations: List[torch.Tensor] = []
         for layer in target_layers:
-            Y_ln = apply_simulated_ln(target_chunks[layer][bucket_idx])
+            Y_ln = prepare_feature_chunks(target_chunks[layer][bucket_idx])
             Y_final = (
                 Y_ln - Y_ln.mean(dim=0, keepdim=True)
                 if args.col_center
@@ -349,16 +379,27 @@ def run(args: argparse.Namespace):
         os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
     payload = {
-        "origin_layer": args.origin_layer,
+        "origin_layers": origin_layers,
         "target_layers": target_layers,
         "rotation_matrices": rotation_stack,
         "feature_dim": X_final.shape[1],
         "num_valid_tokens": num_valid_tokens_payload,
-        "strategy": "row_ln_then_col_center" if args.col_center else "row_ln",
+        "strategy": (
+            "row_ln_then_col_center"
+            if args.residual_use_layernorm and args.col_center
+            else "row_ln"
+            if args.residual_use_layernorm
+            else "raw_then_col_center"
+            if args.col_center
+            else "raw"
+        ),
+        "residual_use_layernorm": args.residual_use_layernorm,
         "column_center": args.col_center,
         "timestep_buckets": num_buckets,
         "timestep_bucket_edges": bucket_edges,
     }
+    if len(origin_layers) == 1:
+        payload["origin_layer"] = origin_layers[0]
     torch.save(payload, args.output)
     print(f"[DONE] Saved Procrustes rotations to {args.output}")
     
@@ -382,15 +423,18 @@ def main():
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--seed", type=int, default=0)
 
-    parser.add_argument("--origin-layer", type=int, default=1)
+    parser.add_argument("--origin-layer", type=int, default=None)
+    parser.add_argument("--origin-layers", type=int, nargs="+", default=None)
     parser.add_argument("--target-layer-start", type=int, default=2)
     parser.add_argument("--target-layers", type=int, nargs="+", default=None)
     parser.add_argument("--no-padding-mask", action="store_false", dest="use_padding_mask", default=True)
+    parser.add_argument("--residual_use_layernorm", type=int, default=1)
     parser.add_argument("--col-center", action="store_true", help="Enable column-wise centering.")
     parser.add_argument("--timestep-buckets", type=int, default=1)
     parser.add_argument("--output", type=str, default="procrustes_rotations.pt")
 
     args = parser.parse_args()
+    args.residual_use_layernorm = bool(args.residual_use_layernorm)
     run(args)
 
 

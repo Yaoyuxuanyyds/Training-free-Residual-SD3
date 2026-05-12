@@ -116,6 +116,25 @@ def fix_feat_shape(f: torch.Tensor) -> torch.Tensor:
     return f
 
 
+def print_top_token_stats(
+    layer: int,
+    token_mean: np.ndarray,
+    token_std: np.ndarray,
+    top_n: int = 10,
+):
+    mean_flat = token_mean.reshape(-1)
+    std_flat = token_std.reshape(-1)
+    n = min(top_n, mean_flat.shape[0], std_flat.shape[0])
+
+    print(f"[TOKEN_STATS] Layer {layer}: first {n} tokens (pre-normalization)")
+    if n == 0:
+        print("  (no tokens)")
+        return
+
+    for i in range(n):
+        print(f"  token[{i:03d}] mean={mean_flat[i]:.6f} std={std_flat[i]:.6f}")
+
+
 # ================================================================
 # PCA & global embedding helpers
 # ================================================================
@@ -445,13 +464,19 @@ def run(args):
             # ======================================================
             # NEW: record pre-normalization stats (scalar mean/std)
             # ======================================================
-            pre_mean_vec = feats.mean(-1, keepdims=True).cpu().numpy()   # shape [1, D]
-            pre_std_vec  = feats.std(-1, keepdims=True).cpu().numpy()    # shape [1, D]
+            pre_mean_vec = feats.mean(-1).cpu().numpy()
+            pre_std_vec = feats.std(-1).cpu().numpy()
             layer_stats[l] = {
                 "mean": float(pre_mean_vec.mean()),     # scalar mean
                 "std": float(pre_std_vec.mean()),       # scalar std
             }
 
+            print_top_token_stats(
+                layer=l,
+                token_mean=pre_mean_vec,
+                token_std=pre_std_vec,
+                top_n=args.token_report_count,
+            )
             # ======================================================
             # optional per-layer normalization
             # ======================================================
@@ -537,6 +562,7 @@ def parse_args():
     p.add_argument("--output-dir", type=str, default="attn_vis_out")
     p.add_argument("--output-name", type=str, default="cknna_cosine_curve.png")
     p.add_argument("--vis-sample-size", type=int, default=512)
+    p.add_argument("--token-report-count", type=int, default=10)
     p.add_argument("--seed", type=int, default=42)
 
     return p.parse_args()

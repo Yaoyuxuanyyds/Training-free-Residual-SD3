@@ -76,6 +76,7 @@ class FluxSampler:
         residual_target_layers=None,
         residual_origin_layer=None,
         residual_weights=None,
+        residual_use_layernorm: bool = True,
         residual_rotation_matrices=None,
         residual_rotation_meta=None,
     ):
@@ -90,6 +91,7 @@ class FluxSampler:
                 residual_target_layers=residual_target_layers,
                 residual_origin_layer=residual_origin_layer,
                 residual_weights=residual_weights,
+                residual_use_layernorm=residual_use_layernorm,
                 residual_rotation_matrices=residual_rotation_matrices,
                 residual_rotation_meta=residual_rotation_meta,
             )
@@ -126,8 +128,10 @@ if __name__ == "__main__":
     parser.add_argument("--residual_weights", type=float, nargs="+", default=None)
     parser.add_argument("--residual_weights_path", type=str, default=None)
     parser.add_argument("--residual_procrustes_path", type=str, default=None)
+    parser.add_argument("--residual_use_layernorm", type=int, default=1)
 
     args = parser.parse_args()
+    args.residual_use_layernorm = bool(args.residual_use_layernorm)
     set_seed(args.seed)
 
     interpolation = INTERPOLATIONS["bilinear"]
@@ -206,6 +210,7 @@ if __name__ == "__main__":
                 residual_target_layers=args.residual_target_layers,
                 residual_origin_layer=args.residual_origin_layer,
                 residual_weights=args.residual_weights,
+                residual_use_layernorm=args.residual_use_layernorm,
                 residual_rotation_matrices=residual_rotation_matrices,
                 residual_rotation_meta=residual_rotation_meta,
             )
@@ -240,6 +245,7 @@ if __name__ == "__main__":
             residual_target_layers=args.residual_target_layers,
             residual_origin_layer=args.residual_origin_layer,
             residual_weights=args.residual_weights,
+            residual_use_layernorm=args.residual_use_layernorm,
             residual_rotation_matrices=residual_rotation_matrices,
             residual_rotation_meta=residual_rotation_meta,
         )
